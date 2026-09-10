@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from ...tools.mcp.mcp_client import MCPClient
 
 Command = Literal["connect", "list_tools", "call_tool", "disconnect"]
 """Commands supported by the mcp_client tool."""
+
+
+@dataclass
+class _Connection:
+    """A live MCP connection and its GC finalizer handle."""
+
+    client: MCPClient
+    finalizer: Any
 
 
 MCP_CLIENT_DESCRIPTION = (

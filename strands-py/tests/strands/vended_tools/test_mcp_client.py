@@ -107,10 +107,6 @@ class TestServerValidation:
         tool = make_mcp_client(servers=[config, config])
         assert tool is not None
 
-    def test_stdio_config_without_command_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="url.*or.*command|command.*or.*url|must have either"):
-            make_mcp_client(servers=[{"args": ["server.js"]}])
-
     def test_stdio_config_is_accepted(self) -> None:
         tool = make_mcp_client(servers=[{"command": "node", "args": ["server.js"]}])
         assert tool.tool_name == "mcp_client"

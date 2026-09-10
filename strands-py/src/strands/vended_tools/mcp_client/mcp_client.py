@@ -19,10 +19,11 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from ...tools.decorator import tool
+from ...tools.mcp.mcp_agent_tool import MCPAgentTool
 from ...tools.mcp.mcp_client import MCPClient, MCPServerConfig
 from ...tools.mcp.mcp_types import MCPToolResult
 from ...types.tools import ToolContext, ToolSpec
-from .types import MCP_CLIENT_DESCRIPTION, Command
+from .types import MCP_CLIENT_DESCRIPTION, Command, _Connection
 
 if TYPE_CHECKING:
     from ...tools.decorator import DecoratedFunctionTool
@@ -61,8 +62,8 @@ def make_mcp_client(
         permitted = ", ".join(f"'{s}'" for s in sorted(server_map))
         description = f"{MCP_CLIENT_DESCRIPTION} Permitted servers: {permitted}."
 
-    # One MCPClient per agent. WeakKeyDictionary so agents can be garbage collected normally.
-    clients: weakref.WeakKeyDictionary[Any, MCPClient] = weakref.WeakKeyDictionary()
+    # One connection per agent. WeakKeyDictionary so agents can be garbage collected normally.
+    connections: weakref.WeakKeyDictionary[Any, _Connection] = weakref.WeakKeyDictionary()
 
     @tool(name=name, description=description, context="tool_context")
     async def mcp_client_tool(
@@ -91,11 +92,12 @@ def make_mcp_client(
         if command == "connect":
             if not server:
                 raise MCPClientToolError("`server` is required for command='connect'")
-            return await _handle_connect(clients, agent, server_map=server_map, server=server)
+            return await _handle_connect(connections, agent, server_map=server_map, server=server)
 
-        client = clients.get(agent)
-        if client is None:
+        conn = connections.get(agent)
+        if conn is None:
             raise MCPClientToolError("No active connection. Call 'connect' first.")
+        client = conn.client
 
         if command == "list_tools":
             return await asyncio.to_thread(_handle_list_tools, client)
@@ -111,7 +113,7 @@ def make_mcp_client(
             )
 
         if command == "disconnect":
-            return await _handle_disconnect(clients, agent)
+            return await _handle_disconnect(connections, agent)
 
         raise MCPClientToolError(f"Unknown command: {command}")
 
@@ -182,7 +184,7 @@ def _stop_client_in_background(client: MCPClient) -> None:
 
 
 async def _handle_connect(
-    clients: weakref.WeakKeyDictionary[Any, MCPClient],
+    connections: weakref.WeakKeyDictionary[Any, _Connection],
     agent: Any,
     *,
     server_map: dict[str, MCPServerConfig],
@@ -194,46 +196,48 @@ async def _handle_connect(
 
     config = cast(dict[str, Any], server_map[server])
     loaded = MCPClient.load_servers({"vended": config})
+    if not loaded:
+        raise MCPClientToolError(f"Server {server!r} failed to initialise; check the server config")
     client = loaded[0]
 
     try:
         await asyncio.to_thread(client.start)
         # Read after start() so concurrent connects each see and stop the other's client.
-        previous = clients.get(agent)
-        clients[agent] = client
-        weakref.finalize(agent, _stop_client_in_background, client)
+        previous = connections.get(agent)
+        finalizer = weakref.finalize(agent, _stop_client_in_background, client)
+        connections[agent] = _Connection(client=client, finalizer=finalizer)
     except BaseException:
         # start() failed or task was cancelled — stop the partially-started client before re-raising.
         _stop_client(client)
         raise
 
     if previous is not None:
-        await asyncio.to_thread(_stop_client, previous)
+        previous.finalizer.detach()
+        await asyncio.to_thread(_stop_client, previous.client)
 
     logger.debug("server=<%s> | opened MCP connection", server)
     return f"Successfully connected to {server}"
 
 
 def _handle_list_tools(client: MCPClient) -> list[ToolSpec]:
-    all_tools = []
-    pagination_token = None
+    all_tools: list[MCPAgentTool] = []
+    pagination_token: str | None = None
     while True:
         page = client.list_tools_sync(pagination_token)
         all_tools.extend(page)
         pagination_token = page.pagination_token
         if pagination_token is None:
             break
+    # Get mcp_tool.name instead of tool_name (may be prefixed) so call_tool works verbatim.
     return [{**t.tool_spec, "name": t.mcp_tool.name} for t in all_tools]
 
 
 async def _handle_disconnect(
-    clients: weakref.WeakKeyDictionary[Any, MCPClient],
+    connections: weakref.WeakKeyDictionary[Any, _Connection],
     agent: Any,
 ) -> str:
-    client = clients.get(agent)
-    if client is not None:
-        try:
-            await asyncio.to_thread(_stop_client, client)
-        finally:
-            clients.pop(agent, None)
+    conn = connections.pop(agent, None)
+    if conn is not None:
+        conn.finalizer.detach()
+        await asyncio.to_thread(_stop_client, conn.client)
     return "Successfully disconnected"
