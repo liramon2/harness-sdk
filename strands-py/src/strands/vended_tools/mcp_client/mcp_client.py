@@ -166,13 +166,17 @@ def _validate_servers(servers: list[MCPServerConfig]) -> dict[str, MCPServerConf
     return server_map
 
 
-def _stop_client_on_gc(client: MCPClient) -> None:
-    """Stop an MCPClient when its owning agent is garbage-collected.
+def _stop_client(client: MCPClient) -> None:
+    """Best-effort stop: call ``stop()`` and swallow exceptions."""
+    try:
+        client.stop(None, None, None)
+    except Exception:
+        logger.debug("failed to stop MCP client", exc_info=True)
 
-    Runs ``stop()`` on a daemon thread with a 1 s join cap so a wedged transport
-    cannot stall the garbage collector thread indefinitely.
-    """
-    thread = threading.Thread(target=client.stop, args=(None, None, None), daemon=True)
+
+def _stop_client_in_background(client: MCPClient) -> None:
+    """Stop the client on a daemon thread with a 1 s join cap."""
+    thread = threading.Thread(target=_stop_client, args=(client,), daemon=True)
     thread.start()
     thread.join(timeout=1.0)
 
@@ -188,11 +192,6 @@ async def _handle_connect(
         permitted = ", ".join(sorted(server_map))
         raise MCPClientToolError(f"Server {server!r} is not on the allowlist. Permitted servers: {permitted}")
 
-    # Stop any existing connection before opening a new one.
-    existing = clients.get(agent)
-    if existing is not None:
-        await _handle_disconnect(clients, agent)
-
     config = cast(dict[str, Any], server_map[server])
     loaded = MCPClient.load_servers({"vended": config})
     client = loaded[0]
@@ -202,20 +201,14 @@ async def _handle_connect(
         # Read after start() so concurrent connects each see and stop the other's client.
         previous = clients.get(agent)
         clients[agent] = client
-        weakref.finalize(agent, _stop_client_on_gc, client)
+        weakref.finalize(agent, _stop_client_in_background, client)
     except BaseException:
         # start() failed or task was cancelled — stop the partially-started client before re-raising.
-        try:
-            client.stop(None, None, None)
-        except Exception:
-            logger.debug("failed to stop MCP client after connect failure", exc_info=True)
+        _stop_client(client)
         raise
 
     if previous is not None:
-        try:
-            await asyncio.to_thread(previous.stop, None, None, None)
-        except RuntimeError:
-            logger.debug("previous MCP connection was already closed")
+        await asyncio.to_thread(_stop_client, previous)
 
     logger.debug("server=<%s> | opened MCP connection", server)
     return f"Successfully connected to {server}"
@@ -235,9 +228,7 @@ async def _handle_disconnect(
     client = clients.get(agent)
     if client is not None:
         try:
-            await asyncio.to_thread(client.stop, None, None, None)
-        except RuntimeError:
-            logger.debug("MCP connection was already closed")
+            await asyncio.to_thread(_stop_client, client)
         finally:
             clients.pop(agent, None)
     return "Successfully disconnected"

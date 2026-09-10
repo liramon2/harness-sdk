@@ -52,8 +52,8 @@ def _fake_mcp_client_class(
     *,
     list_tools_return: list[MCPAgentTool] | None = None,
     call_tool_return: dict[str, Any] | None = None,
-) -> Any:
-    """Return a MagicMock-based MCPClient replacement whose start/stop record calls."""
+) -> tuple[Any, MagicMock]:
+    """Return (load_servers patch target, mock client instance) for patching MCPClient."""
     instance = MagicMock()
     instance.start = MagicMock()
     instance.stop = MagicMock()
