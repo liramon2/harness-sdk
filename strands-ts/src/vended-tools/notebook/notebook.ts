@@ -90,12 +90,15 @@ export function makeNotebook({
           const hasReplacement = data.oldStr !== undefined && data.newStr !== undefined
           const hasInsertion = data.insertLine !== undefined && data.newStr !== undefined
           const hasAppend = data.oldStr === undefined && data.insertLine === undefined && data.newStr !== undefined
-          return hasReplacement || hasInsertion || hasAppend
+          const isAmbiguous = data.oldStr !== undefined && data.insertLine !== undefined
+          return (hasReplacement || hasInsertion || hasAppend) && !isAmbiguous
         }
         return true
       },
       {
-        message: 'Write operation requires newStr, optionally with oldStr for replacement or insertLine for insertion',
+        message:
+          'Write operation requires newStr, optionally with oldStr for replacement or insertLine for insertion; ' +
+          'oldStr and insertLine cannot be combined',
       }
     )
 
@@ -112,7 +115,7 @@ export function makeNotebook({
       const notebooksObj = context.agent.appState.get('notebooks')
       let notebooks: Record<string, string>
 
-      if (!notebooksObj) {
+      if (notebooksObj == null) {
         notebooks = {}
       } else if (typeof notebooksObj === 'object' && !Array.isArray(notebooksObj)) {
         if (Object.values(notebooksObj as object).some((v) => typeof v !== 'string')) {
@@ -259,7 +262,11 @@ function handleRead(notebooks: Record<string, string>, name: string, readRange?:
     selectedLines.push(`${lineNum}: ${lines[lineNum - 1]}`)
   }
 
-  return selectedLines.length > 0 ? selectedLines.join('\n') : 'No valid lines found in range'
+  if (selectedLines.length === 0) {
+    return `No lines found in range [${readRange[0]}, ${readRange[1]}]. Notebook '${name}' has ${lines.length} line(s).`
+  }
+
+  return selectedLines.join('\n')
 }
 
 /**

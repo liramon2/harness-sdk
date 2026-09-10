@@ -146,7 +146,14 @@ describe('notebook tool', () => {
       const { state, context } = createFreshContext()
       state.set('notebooks', { default: 'Line 1\nLine 2\nLine 3\nLine 4\nLine 5' })
       const result = await notebook.invoke({ mode: 'read', readRange: [10, 20] }, context)
-      expect(result).toBe('No valid lines found in range')
+      expect(result).toBe("No lines found in range [10, 20]. Notebook 'default' has 5 line(s).")
+    })
+
+    it('clamps a huge end bound', { timeout: 1000 }, async () => {
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { default: 'Line 1\nLine 2\nLine 3' })
+      const result = await notebook.invoke({ mode: 'read', readRange: [1, 1e9] }, context)
+      expect(result).toBe('1: Line 1\n2: Line 2\n3: Line 3')
     })
   })
 
@@ -549,6 +556,22 @@ describe('notebook tool', () => {
         )
       ).rejects.toThrow()
     })
+
+    it('rejects write with both oldStr and insertLine', async () => {
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { default: 'Line 1\nLine 2' })
+      await expect(
+        notebook.invoke(
+          {
+            mode: 'write',
+            oldStr: 'Line 1',
+            newStr: 'Replaced',
+            insertLine: 0,
+          } as any,
+          context
+        )
+      ).rejects.toThrow()
+    })
   })
 
   describe('malformed state guard', () => {
@@ -605,6 +628,7 @@ describe('notebook tool', () => {
       await expect(
         smallTool.invoke({ mode: 'write', name: 'notes', newStr: 'This string pushes it over the limit' }, context)
       ).rejects.toThrow('would exceed maximum of 20 bytes')
+      expect(state.get<NotebookState>('notebooks')!.notes).toBe('Hello')
     })
 
     it('throws when write (replace) would exceed the cap', async () => {
@@ -667,9 +691,10 @@ describe('notebook tool', () => {
 
     it('does not persist state after list', async () => {
       const { state, context } = createFreshContext()
-      state.set('notebooks', { nb: 'data' })
-      await notebook.invoke({ mode: 'list' }, context)
-      expect(state.get('notebooks')).toEqual({ nb: 'data' })
+      state.set('notebooks', {})
+      const result = await notebook.invoke({ mode: 'list' }, context)
+      expect(result).toContain('default: Empty')
+      expect(state.get('notebooks')).toEqual({})
     })
   })
 })
