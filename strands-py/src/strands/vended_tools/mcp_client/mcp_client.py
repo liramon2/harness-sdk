@@ -98,7 +98,7 @@ def make_mcp_client(
             raise MCPClientToolError("No active connection. Call 'connect' first.")
 
         if command == "list_tools":
-            return await _handle_list_tools(client)
+            return await asyncio.to_thread(_handle_list_tools, client)
 
         if command == "call_tool":
             if not tool_name:
@@ -214,11 +214,16 @@ async def _handle_connect(
     return f"Successfully connected to {server}"
 
 
-async def _handle_list_tools(client: MCPClient) -> list[ToolSpec]:
-    agent_tools = await asyncio.to_thread(
-        lambda: client._list_all_tools_sync()  # noqa: SLF001
-    )
-    return [{**t.tool_spec, "name": t.mcp_tool.name} for t in agent_tools]
+def _handle_list_tools(client: MCPClient) -> list[ToolSpec]:
+    all_tools = []
+    pagination_token = None
+    while True:
+        page = client.list_tools_sync(pagination_token)
+        all_tools.extend(page)
+        pagination_token = page.pagination_token
+        if pagination_token is None:
+            break
+    return [{**t.tool_spec, "name": t.mcp_tool.name} for t in all_tools]
 
 
 async def _handle_disconnect(

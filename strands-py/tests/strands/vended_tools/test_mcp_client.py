@@ -10,6 +10,7 @@ import pytest
 from mcp.types import Tool as MCPTool
 
 from strands.tools.mcp import MCPAgentTool
+from strands.types.collections import PaginatedList
 from strands.types.tools import ToolContext
 from strands.vended_tools import make_mcp_client
 from strands.vended_tools.mcp_client.mcp_client import MCPClientToolError
@@ -57,7 +58,7 @@ def _fake_mcp_client_class(
     instance = MagicMock()
     instance.start = MagicMock()
     instance.stop = MagicMock()
-    instance._list_all_tools_sync = MagicMock(return_value=list_tools_return or [])
+    instance.list_tools_sync = MagicMock(return_value=PaginatedList(list_tools_return or []))
 
     async def _call(*args: Any, **kwargs: Any) -> Any:
         return call_tool_return or {"status": "success", "content": [{"text": "ok"}]}
@@ -69,7 +70,7 @@ def _fake_mcp_client_class(
 def _mcp_instance(tools: list[MCPAgentTool] | None = None) -> MagicMock:
     """Return a MagicMock that satisfies load_servers' return contract."""
     instance = MagicMock()
-    instance._list_all_tools_sync = MagicMock(return_value=tools or [])
+    instance.list_tools_sync = MagicMock(return_value=PaginatedList(tools or []))
     return instance
 
 
