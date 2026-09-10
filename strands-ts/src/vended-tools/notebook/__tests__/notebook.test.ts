@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { notebook } from '../notebook.js'
+import { makeNotebook, notebook } from '../notebook.js'
 import type { NotebookInput, NotebookState } from '../types.js'
 import type { ToolContext } from '../../../index.js'
 import { StateStore } from '../../../state-store.js'
@@ -502,14 +502,6 @@ describe('notebook tool', () => {
       notebooks = state.get<NotebookState>('notebooks')
       expect(notebooks!.notes).toBe('Initial\nAdded')
     })
-
-    it('initializes default notebook if state is empty', async () => {
-      const { state, context } = createFreshContext()
-      const result = await notebook.invoke({ mode: 'list' }, context)
-      expect(result).toContain('default: Empty')
-      const notebooks = state.get<NotebookState>('notebooks')
-      expect(notebooks!.default).toBe('')
-    })
   })
 
   describe('validation errors', () => {
@@ -556,6 +548,128 @@ describe('notebook tool', () => {
           context
         )
       ).rejects.toThrow()
+    })
+  })
+
+  describe('malformed state guard', () => {
+    it('throws when notebooks state is not a plain object', async () => {
+      const { state, context } = createFreshContext()
+      state.set('notebooks', 42)
+      await expect(notebook.invoke({ mode: 'list' }, context)).rejects.toThrow(
+        'Malformed notebooks state: expected a plain object'
+      )
+    })
+
+    it('throws when notebooks state contains a non-string value', async () => {
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { notes: 123 })
+      await expect(notebook.invoke({ mode: 'list' }, context)).rejects.toThrow(
+        'Malformed notebooks state: keys and values must be strings'
+      )
+    })
+  })
+
+  describe('makeNotebook factory', () => {
+    it('throws when name is empty', () => {
+      expect(() => makeNotebook({ name: '' })).toThrow('name must be a non-empty string')
+    })
+
+    it('throws when maxNotebookSizeBytes is zero', () => {
+      expect(() => makeNotebook({ maxNotebookSizeBytes: 0 })).toThrow('maxNotebookSizeBytes must be a positive integer')
+    })
+
+    it('throws when maxNotebookSizeBytes is a float', () => {
+      expect(() => makeNotebook({ maxNotebookSizeBytes: 1.5 })).toThrow(
+        'maxNotebookSizeBytes must be a positive integer'
+      )
+    })
+
+    it('accepts a positive integer maxNotebookSizeBytes', () => {
+      expect(() => makeNotebook({ maxNotebookSizeBytes: 1024 })).not.toThrow()
+    })
+  })
+
+  describe('size cap enforcement', () => {
+    it('throws when create content exceeds the cap', async () => {
+      const smallTool = makeNotebook({ maxNotebookSizeBytes: 10 })
+      const { context } = createFreshContext()
+      await expect(
+        smallTool.invoke({ mode: 'create', name: 'nb', newStr: 'This is longer than ten bytes' }, context)
+      ).rejects.toThrow('would exceed maximum of 10 bytes')
+    })
+
+    it('throws when write (append) would exceed the cap', async () => {
+      const smallTool = makeNotebook({ maxNotebookSizeBytes: 20 })
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { notes: 'Hello' })
+      await expect(
+        smallTool.invoke({ mode: 'write', name: 'notes', newStr: 'This string pushes it over the limit' }, context)
+      ).rejects.toThrow('would exceed maximum of 20 bytes')
+    })
+
+    it('throws when write (replace) would exceed the cap', async () => {
+      const smallTool = makeNotebook({ maxNotebookSizeBytes: 10 })
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { notes: 'Hi' })
+      await expect(
+        smallTool.invoke({ mode: 'write', name: 'notes', oldStr: 'Hi', newStr: 'A string that is too long' }, context)
+      ).rejects.toThrow('would exceed maximum of 10 bytes')
+    })
+
+    it('does not apply the size cap for clear', async () => {
+      // clear cannot grow content, so cap must not apply even on a tool with a tiny cap
+      const smallTool = makeNotebook({ maxNotebookSizeBytes: 5 })
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { notes: 'Big content here that exceeds 5 bytes' })
+      await expect(smallTool.invoke({ mode: 'clear', name: 'notes' }, context)).resolves.toBe(
+        "Cleared notebook 'notes'"
+      )
+    })
+
+    it('allows content exactly at the cap', async () => {
+      const content = 'abc' // 3 bytes
+      const smallTool = makeNotebook({ maxNotebookSizeBytes: 3 })
+      const { context } = createFreshContext()
+      await expect(smallTool.invoke({ mode: 'create', name: 'nb', newStr: content }, context)).resolves.toBe(
+        "Created notebook 'nb' with specified content"
+      )
+    })
+  })
+
+  describe('mutating mode state persistence gating', () => {
+    it('persists state after create', async () => {
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { nb: '' })
+      await notebook.invoke({ mode: 'create', name: 'nb', newStr: 'hello' }, context)
+      expect(state.get<NotebookState>('notebooks')!.nb).toBe('hello')
+    })
+
+    it('persists state after write', async () => {
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { nb: 'hello' })
+      await notebook.invoke({ mode: 'write', name: 'nb', newStr: ' world' }, context)
+      expect(state.get<NotebookState>('notebooks')!.nb).toBe('hello\n world')
+    })
+
+    it('persists state after clear', async () => {
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { nb: 'data' })
+      await notebook.invoke({ mode: 'clear', name: 'nb' }, context)
+      expect(state.get<NotebookState>('notebooks')!.nb).toBe('')
+    })
+
+    it('does not persist state after read', async () => {
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { nb: 'unchanged' })
+      await notebook.invoke({ mode: 'read', name: 'nb' }, context)
+      expect(state.get('notebooks')).toEqual({ nb: 'unchanged' })
+    })
+
+    it('does not persist state after list', async () => {
+      const { state, context } = createFreshContext()
+      state.set('notebooks', { nb: 'data' })
+      await notebook.invoke({ mode: 'list' }, context)
+      expect(state.get('notebooks')).toEqual({ nb: 'data' })
     })
   })
 })
