@@ -49,14 +49,10 @@ async def run_commit_agent(diff: str) -> str:
 # =============================================================================
 
 
-def task(case: Case) -> dict[str, Any]:
+async def task(case: Case) -> dict[str, Any]:
     telemetry.in_memory_exporter.clear()
 
-    loop = asyncio.new_event_loop()
-    try:
-        response = loop.run_until_complete(run_commit_agent(case.input))
-    finally:
-        loop.close()
+    response = await run_commit_agent(case.input)
     telemetry.tracer_provider.force_flush()
 
     spans = readable_spans_to_dicts(telemetry.in_memory_exporter.get_finished_spans())
@@ -81,9 +77,14 @@ experiment = Experiment(
     evaluators=[HelpfulnessEvaluator(), GoalSuccessRateEvaluator()],
 )
 
-report = experiment.run_evaluations(task)
 
-for case, score, passed, reason in zip(report.cases, report.scores, report.test_passes, report.reasons):
-    status = "PASS" if passed else "FAIL"
-    print(f"[{status}] {case['name']} ({case['evaluator']}): {score:.2f}")
-    print(f"  Reason: {reason}\n")
+async def main():
+    report = await experiment.run_evaluations_async(task)
+
+    for case, score, passed, reason in zip(report.cases, report.scores, report.test_passes, report.reasons):
+        status = "PASS" if passed else "FAIL"
+        print(f"[{status}] {case['name']} ({case['evaluator']}): {score:.2f}")
+        print(f"  Reason: {reason}\n")
+
+
+asyncio.run(main())

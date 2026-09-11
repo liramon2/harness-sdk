@@ -168,14 +168,10 @@ from strands_evals.evaluators import HelpfulnessEvaluator, GoalSuccessRateEvalua
 from strands_evals.mappers import detect_otel_mapper, readable_spans_to_dicts
 
 
-def task(case: Case) -> dict[str, Any]:
+async def task(case: Case) -> dict[str, Any]:
     telemetry.in_memory_exporter.clear()
 
-    loop = asyncio.new_event_loop()
-    try:
-        response = loop.run_until_complete(run_commit_agent(case.input))
-    finally:
-        loop.close()
+    response = await run_commit_agent(case.input)
     telemetry.tracer_provider.force_flush()
 
     spans = readable_spans_to_dicts(telemetry.in_memory_exporter.get_finished_spans())
@@ -206,21 +202,20 @@ experiment = Experiment(
     evaluators=[HelpfulnessEvaluator(), GoalSuccessRateEvaluator()],
 )
 
-report = experiment.run_evaluations(task)
+async def main():
+    report = await experiment.run_evaluations_async(task)
+
+    for case, score, passed, reason in zip(report.cases, report.scores, report.test_passes, report.reasons):
+        status = "PASS" if passed else "FAIL"
+        print(f"[{status}] {case['name']} ({case['evaluator']}): {score:.2f}")
+        print(f"  Reason: {reason}\n")
+
+asyncio.run(main())
 ```
 
 ### Step 4: Inspect the results
 
-```python
-for case, score, passed, reason in zip(
-    report.cases, report.scores, report.test_passes, report.reasons
-):
-    status = "PASS" if passed else "FAIL"
-    print(f"[{status}] {case['name']} ({case['evaluator']}): {score:.2f}")
-    print(f"  Reason: {reason}\n")
-```
-
-Running this produces:
+Running the experiment produces:
 
 ```
 [PASS] fix-null-check (HelpfulnessEvaluator): 0.83
@@ -432,14 +427,15 @@ experiment = Experiment(
     evaluators=[HelpfulnessEvaluator(), GoalSuccessRateEvaluator()],
 )
 
-report = experiment.run_evaluations(provider.as_task())
+async def main():
+    report = await experiment.run_evaluations_async(provider.as_task())
 
-for case, score, passed, reason in zip(
-    report.cases, report.scores, report.test_passes, report.reasons
-):
-    status = "PASS" if passed else "FAIL"
-    print(f"[{status}] {case['name']} ({case['evaluator']}): {score:.2f}")
-    print(f"  Reason: {reason}\n")
+    for case, score, passed, reason in zip(report.cases, report.scores, report.test_passes, report.reasons):
+        status = "PASS" if passed else "FAIL"
+        print(f"[{status}] {case['name']} ({case['evaluator']}): {score:.2f}")
+        print(f"  Reason: {reason}\n")
+
+asyncio.run(main())
 ```
 
 The evaluators score the production traces the same way they scored the in-process traces from
