@@ -15,6 +15,7 @@ from strands_evals.telemetry import StrandsEvalsTelemetry
 telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
 ClaudeAgentSDKInstrumentor().instrument()
 
+# Import after instrument() so the instrumentor patches the SDK before its symbols are bound.
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query  # noqa: E402
 
 async def run_commit_agent(diff: str) -> str:

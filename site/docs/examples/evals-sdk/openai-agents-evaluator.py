@@ -15,6 +15,7 @@ from strands_evals.telemetry import StrandsEvalsTelemetry
 telemetry = StrandsEvalsTelemetry().setup_in_memory_exporter()
 OpenAIAgentsInstrumentor().instrument()
 
+# Import after instrument() so the instrumentor patches the SDK before its symbols are bound.
 from agents import Agent, Runner  # noqa: E402
 
 
