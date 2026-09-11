@@ -20,7 +20,7 @@ from agents import Agent, Runner  # noqa: E402
 
 commit_agent = Agent(
     name="commit_agent",
-    model="gpt-4o-mini",
+    model="gpt-5.6-sol",
     instructions=(
         "Write a conventional commit message for the given diff. "
         "Format: <type>(<scope>): <subject>. "

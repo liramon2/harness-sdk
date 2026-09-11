@@ -10,12 +10,10 @@ tags:
 draft: false
 ---
 
-When I was comparing Strands to OpenAI Agents a few months ago, I looked primarily at their feature sets: multi-agent
-primitives, context management, developer experience, and other obvious qualities. But all of these
-characteristics dance around what truly matters: how well the agent answers prompts, a job often reserved for
-evaluation frameworks. The caveat: running Strands through Strands Evals and OpenAI Agents through OpenAI Evals
-does not yield an exact comparison. Without a shared evaluation setup, performance differences could be attributed to
-the agents themselves or to evaluation discrepancies.
+When I was comparing Strands to OpenAI Agents a few months ago, I wanted to compare how well the agents responded,
+a job often reserved for evaluation frameworks. The caveat: running Strands through Strands Evals and OpenAI Agents
+through OpenAI Evals does not yield an exact comparison. Without a shared evaluation setup, performance differences
+could be due to the agents' behaviors or to evaluation discrepancies.
 
 Today, [Strands Evals](https://github.com/strands-agents/evals) is simplifying cross-framework comparison for scenarios
 like the above. It now supports traces emitted from several new agent frameworks, including those following GenAI
@@ -271,7 +269,7 @@ from agents import Agent, Runner
 
 commit_agent = Agent(
     name="commit_agent",
-    model="gpt-4o-mini",
+    model="gpt-5.6-sol",
     instructions=(
         "Write a conventional commit message for the given diff. "
         "Format: <type>(<scope>): <subject>. "
@@ -495,8 +493,8 @@ provider = LangfuseProvider(
 
 With framework-agnostic evaluation, you define your cases and evaluators once, swap in a
 different agent, and compare results directly. The scoring methodology stays constant, so
-differences in results reflect differences in the agents, not the evaluation tooling. Whether you
-are choosing your first agent framework or comparing several in production, framework-agnostic
+differing results only reflect differences in the agents. Whether you are choosing
+your first agent framework or comparing several in production, framework-agnostic
 evaluation gives you one tool that follows you.
 
 While Strands Evals strives to be framework-agnostic and supports a healthy range of frameworks,
