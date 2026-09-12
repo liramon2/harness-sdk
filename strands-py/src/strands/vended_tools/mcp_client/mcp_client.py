@@ -39,28 +39,29 @@ def make_mcp_client(
     *,
     name: str = "mcp_client",
     description: str | None = None,
-    servers: list[MCPServerConfig],
+    servers: dict[str, MCPServerConfig],
 ) -> DecoratedFunctionTool:
     """Create an agent-callable MCP client tool bound to a developer-set server allowlist.
 
     Args:
         name: Tool name. Defaults to ``"mcp_client"``.
         description: Tool description shown to the model. Defaults to a description
-            that includes the list of permitted servers.
-        servers: Server configurations the tool may connect to. Each entry must have either
-            a ``url`` field (streamable-http) or a ``command`` field (stdio). Must not be empty.
+            that includes the list of permitted server names.
+        servers: Allowlisted servers keyed by name. The name is passed to ``connect``; the config
+            is forwarded to :class:`~strands.tools.mcp.MCPClient`. Must not be empty.
 
     Returns:
         A decorated tool that manages MCP sessions.
 
     Raises:
-        ValueError: If ``servers`` is empty or contains an invalid entry.
+        ValueError: If ``servers`` is empty.
     """
-    server_map = _validate_servers(servers)
+    if not servers:
+        raise ValueError("`servers` must not be empty; the mcp_client tool requires at least one server")
 
     if description is None:
-        permitted = ", ".join(f"'{s}'" for s in sorted(server_map))
-        description = f"{MCP_CLIENT_DESCRIPTION} Permitted servers: {permitted}."
+        permitted = ", ".join(f"'{s}'" for s in sorted(servers))
+        description = f"{MCP_CLIENT_DESCRIPTION} Permitted server names: {permitted}."
 
     # One connection per agent. WeakKeyDictionary so agents can be garbage collected normally.
     connections: weakref.WeakKeyDictionary[Any, _Connection] = weakref.WeakKeyDictionary()
@@ -69,7 +70,7 @@ def make_mcp_client(
     async def mcp_client_tool(
         command: Command,
         tool_context: ToolContext,
-        server: str | None = None,
+        server_name: str | None = None,
         tool_name: str | None = None,
         arguments: dict[str, Any] | None = None,
     ) -> list[ToolSpec] | MCPToolResult | str:
@@ -78,8 +79,7 @@ def make_mcp_client(
         Args:
             command: The operation to perform: ``connect``, ``list_tools``, ``call_tool``, ``disconnect``.
             tool_context: Injected by the framework. Not user-facing.
-            server: Server to connect to for ``connect``. For HTTP servers, a URL; for stdio servers,
-                the full command invocation. Must match the developer-set allowlist verbatim.
+            server_name: Server name to connect to for ``connect``. Must be in the developer-set allowlist.
             tool_name: Tool name to invoke, required for ``call_tool``.
             arguments: Arguments to pass to the invoked tool, for ``call_tool``.
 
@@ -90,9 +90,9 @@ def make_mcp_client(
         agent = tool_context.agent
 
         if command == "connect":
-            if not server:
-                raise MCPClientToolError("`server` is required for command='connect'")
-            return await _handle_connect(connections, agent, server_map=server_map, server=server)
+            if not server_name:
+                raise MCPClientToolError("`server_name` is required for command='connect'")
+            return await _handle_connect(connections, agent, servers=servers, server_name=server_name)
 
         conn = connections.get(agent)
         if conn is None:
@@ -123,42 +123,6 @@ def make_mcp_client(
 # ---- Internals ----------------------------------------------------------------
 
 
-def _validate_servers(servers: list[MCPServerConfig]) -> dict[str, MCPServerConfig]:
-    """Validate server configs and return a map keyed by server identifier.
-
-    For HTTP entries the key is the URL verbatim; for stdio entries it is
-    the full command invocation (``command`` + space-joined ``args``).
-
-    Returns:
-        A dict keyed by server identifier mapping to the original config.
-
-    Raises:
-        ValueError: If ``servers`` is empty or no entry has a ``url`` or ``command`` field.
-    """
-    if not servers:
-        raise ValueError("`servers` must not be empty; the mcp_client tool requires at least one server")
-
-    server_map: dict[str, MCPServerConfig] = {}
-
-    for config in servers:
-        url = config.get("url")
-        command = config.get("command")
-        if url:
-            key = url
-        elif command:
-            key = " ".join([command] + list(config.get("args") or []))
-        else:
-            raise ValueError("Each server config must have either a 'url' (HTTP) or 'command' (stdio) field")
-        if key in server_map and server_map[key] != config:
-            raise ValueError(
-                f"Server key {key!r} is produced by two different configs; "
-                "remove the duplicate or disambiguate (e.g. use explicit ports or distinct commands)"
-            )
-        server_map[key] = config
-
-    return server_map
-
-
 def _stop_client(client: MCPClient) -> None:
     """Best-effort stop: call ``stop()`` and swallow exceptions."""
     try:
@@ -178,17 +142,17 @@ async def _handle_connect(
     connections: weakref.WeakKeyDictionary[Any, _Connection],
     agent: Any,
     *,
-    server_map: dict[str, MCPServerConfig],
-    server: str,
+    servers: dict[str, MCPServerConfig],
+    server_name: str,
 ) -> str:
-    if server not in server_map:
-        permitted = ", ".join(sorted(server_map))
-        raise MCPClientToolError(f"Server {server!r} is not on the allowlist. Permitted servers: {permitted}")
+    if server_name not in servers:
+        permitted = ", ".join(sorted(servers))
+        raise MCPClientToolError(f"Server {server_name!r} is not on the allowlist. Permitted servers: {permitted}")
 
-    config = cast(dict[str, Any], server_map[server])
-    loaded = MCPClient.load_servers({"vended": config})
+    config = cast(dict[str, Any], servers[server_name])
+    loaded = MCPClient.load_servers({server_name: config})
     if not loaded:
-        raise MCPClientToolError(f"Server {server!r} failed to initialise; check the server config")
+        raise MCPClientToolError(f"Server {server_name!r} failed to initialise; check the server config")
     client = loaded[0]
 
     try:
@@ -207,8 +171,8 @@ async def _handle_connect(
         previous.finalizer.detach()
         await asyncio.to_thread(_stop_client, previous.client)
 
-    logger.debug("server=<%s> | opened MCP connection", server)
-    return f"Successfully connected to {server}"
+    logger.debug("server_name=<%s> | opened MCP connection", server_name)
+    return f"Successfully connected to {server_name}"
 
 
 def _handle_list_tools(client: MCPClient) -> list[ToolSpec]:

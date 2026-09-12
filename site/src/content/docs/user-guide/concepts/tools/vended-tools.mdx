@@ -492,14 +492,14 @@ The allowlist controls which servers the model may connect to. For HTTP servers,
 from strands import Agent
 from strands.vended_tools import make_mcp_client
 
-mcp_client = make_mcp_client(servers=[
-    {"url": "https://mcp.example.com/mcp"},
-    {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
-])
+mcp_client = make_mcp_client(servers={
+    "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
+    "my-api": {"url": "https://mcp.example.com/mcp"},
+})
 agent = Agent(tools=[mcp_client])
 agent(
-    "Connect to https://mcp.example.com/mcp, list its tools, "
-    "call the echo tool with message 'hello', then disconnect."
+    "Connect to 'files', list its tools, "
+    "call the read_file tool on /tmp/hello.txt, then disconnect."
 )
 ```
 

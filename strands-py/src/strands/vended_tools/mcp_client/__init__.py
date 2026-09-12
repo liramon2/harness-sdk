@@ -10,7 +10,9 @@ Example Usage:
     from strands import Agent
     from strands.vended_tools import make_mcp_client
 
-    mcp_client_tool = make_mcp_client(servers=[{"url": "https://mcp.example.com/mcp"}])
+    mcp_client_tool = make_mcp_client(servers={
+        "my-api": {"url": "https://mcp.example.com/mcp"},
+    })
     agent = Agent(tools=[mcp_client_tool])
     ```
 """
