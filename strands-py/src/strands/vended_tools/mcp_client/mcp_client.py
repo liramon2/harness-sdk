@@ -133,7 +133,7 @@ def _validate_servers(servers: list[MCPServerConfig]) -> dict[str, MCPServerConf
         A dict keyed by server identifier mapping to the original config.
 
     Raises:
-        ValueError: If ``servers`` is empty or a config entry is invalid.
+        ValueError: If ``servers`` is empty or no entry has a ``url`` or ``command`` field.
     """
     if not servers:
         raise ValueError("`servers` must not be empty; the mcp_client tool requires at least one server")
@@ -141,18 +141,9 @@ def _validate_servers(servers: list[MCPServerConfig]) -> dict[str, MCPServerConf
     server_map: dict[str, MCPServerConfig] = {}
 
     for config in servers:
-        if config.get("disabled"):
-            raise ValueError(
-                f"Server config with url={config.get('url')!r} command={config.get('command')!r} "
-                "is disabled; remove it from the list or set disabled=False"
-            )
         url = config.get("url")
         command = config.get("command")
         if url:
-            if command:
-                raise ValueError(
-                    f"Server config has both 'url' ({url!r}) and 'command' ({command!r}); provide one or the other"
-                )
             key = url
         elif command:
             key = " ".join([command] + list(config.get("args") or []))
@@ -201,6 +192,7 @@ async def _handle_connect(
     client = loaded[0]
 
     try:
+        # start() blocks until the MCP background thread signals ready — run it off the event loop.
         await asyncio.to_thread(client.start)
         # Read after start() so concurrent connects each see and stop the other's client.
         previous = connections.get(agent)

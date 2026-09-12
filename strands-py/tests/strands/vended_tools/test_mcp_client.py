@@ -81,26 +81,18 @@ class TestServerValidation:
         with pytest.raises(ValueError, match="must not be empty"):
             make_mcp_client(servers=[])
 
-    def test_disabled_config_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="disabled"):
-            make_mcp_client(servers=[{"url": "https://mcp.example.com/mcp", "disabled": True}])
-
-    def test_both_url_and_command_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="both 'url'.*and 'command'|both.*url.*command"):
-            make_mcp_client(servers=[{"url": "https://mcp.example.com/mcp", "command": "node"}])
+    def test_different_configs_colliding_on_same_key_are_rejected(self) -> None:
+        with pytest.raises(ValueError, match="two different configs"):
+            make_mcp_client(
+                servers=[
+                    {"command": "npx", "args": ["my-server"], "env": {"TOKEN": "A"}},
+                    {"command": "npx", "args": ["my-server"], "env": {"TOKEN": "B"}},
+                ]
+            )
 
     def test_neither_url_nor_command_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="url.*or.*command|command.*or.*url|must have either"):
             make_mcp_client(servers=[{"args": ["server.js"]}])
-
-    def test_different_configs_colliding_on_same_key_are_rejected(self) -> None:
-        with pytest.raises(ValueError, match="two different configs|duplicate"):
-            make_mcp_client(
-                servers=[
-                    {"url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer A"}},
-                    {"url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer B"}},
-                ]
-            )
 
     def test_identical_configs_are_deduplicated(self) -> None:
         config = {"url": "https://mcp.example.com/mcp"}
