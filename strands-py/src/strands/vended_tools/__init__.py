@@ -22,7 +22,7 @@ tool name, description, or memory caps.
 
 The :data:`handoff_to_user` tool pauses the agent loop and surfaces a message to
 the user for human-in-the-loop input; use :func:`make_handoff_to_user` to supply
-a custom tool name, description, or message length cap.
+a custom tool name or description.
 
 Example Usage:
     ```python
