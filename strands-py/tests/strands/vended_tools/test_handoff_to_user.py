@@ -65,6 +65,15 @@ class TestInputValidation:
         # Validation runs before any interrupt side effect.
         assert state.interrupts == {}
 
+    @pytest.mark.asyncio
+    async def test_rejects_non_string_message_without_registering_interrupt(self):
+        state = _InterruptState()
+        ctx = _tool_context(interrupt_state=state)
+        with pytest.raises(ValueError, match="must be a string, got int"):
+            await handoff_to_user(tool_context=ctx, message=42)
+        # Validation runs before any interrupt side effect.
+        assert state.interrupts == {}
+
 
 class TestToolMetadata:
     """Tool name, description, and input schema."""
@@ -119,6 +128,11 @@ class TestHandoffToUserAgentLoop:
 
         assert resumed.stop_reason == "end_turn"
         assert "All done" in str(resumed)
+        # The human's reply is surfaced to the model as the handoff tool's result.
+        tool_result = next(
+            block["toolResult"] for message in agent.messages for block in message["content"] if "toolResult" in block
+        )
+        assert tool_result["content"][0]["text"] == "yes@example.com"
 
     def test_interrupt_name_is_constant_even_when_tool_is_renamed(self):
         # The interrupt name is a stable discriminator: renaming the tool via the
