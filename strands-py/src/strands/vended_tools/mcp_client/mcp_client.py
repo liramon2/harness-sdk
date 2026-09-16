@@ -40,16 +40,19 @@ class MCPClientToolError(RuntimeError):
 def make_mcp_client(
     *,
     name: str = "mcp_client",
-    description: str | None = None,
+    description: str = MCP_CLIENT_DESCRIPTION,
+    description_suffix: str | None = None,
     servers: dict[str, MCPServerConfig],
     max_connections: int = _DEFAULT_MAX_CONNECTIONS,
 ) -> DecoratedFunctionTool:
     """Create an agent-callable MCP client tool bound to a developer-set server allowlist.
 
     Args:
-        name: Tool name. Defaults to ``"mcp_client"``.
-        description: Tool description shown to the model. Defaults to a description
-            that includes the list of permitted server names.
+        name: Tool name shown to the model.
+        description: Base tool description shown to the model.
+        description_suffix: Text appended to ``description``, replacing the auto-generated
+            permitted-server-names list. Defaults to ``"Permitted server names: 'a', 'b'."``
+            derived from ``servers``.
         servers: Allowlisted servers keyed by name. The name is passed to ``connect``; the config
             is forwarded to :class:`~strands.tools.mcp.MCPClient`. Must not be empty.
         max_connections: Maximum simultaneous open connections per agent. Defaults to ``10``.
@@ -65,14 +68,15 @@ def make_mcp_client(
     if max_connections < 1:
         raise ValueError("`max_connections` must be at least 1")
 
-    if description is None:
+    if description_suffix is None:
         permitted = ", ".join(f"'{s}'" for s in sorted(servers))
-        description = f"{MCP_CLIENT_DESCRIPTION} Permitted server names: {permitted}."
+        description_suffix = f"Permitted server names: {permitted}."
+    resolved_description = f"{description} {description_suffix}"
 
     # Per-agent connections with WeakKeyDictionary so agents can be garbage collected.
     connections_map: weakref.WeakKeyDictionary[Any, dict[str, MCPClient]] = weakref.WeakKeyDictionary()
 
-    @tool(name=name, description=description, context="tool_context")
+    @tool(name=name, description=resolved_description, context="tool_context")
     async def mcp_client_tool(
         command: Literal["connect", "list_tools", "call_tool", "disconnect"],
         tool_context: ToolContext,
@@ -143,14 +147,18 @@ def _stop_client(client: MCPClient) -> None:
         logger.debug("failed to stop MCP client", exc_info=True)
 
 
-def _cleanup(connections: dict[str, MCPClient]) -> None:
+def _stop_clients_in_background(connections: dict[str, MCPClient]) -> None:
     threads = []
     for connection_id, client in list(connections.items()):
-        logger.debug("connection_id=<%s> | closing MCP connection during GC", connection_id)
+        logger.debug(
+            "connection_id=<%s> | closing MCP connection during garbage collection",
+            connection_id,
+        )
         thread = threading.Thread(target=_stop_client, args=(client,), daemon=True)
         thread.start()
         threads.append(thread)
     for thread in threads:
+        # Small timeout so a hanging stop does not block the garbage collector indefinitely.
         thread.join(timeout=1.0)
 
 
@@ -164,12 +172,14 @@ async def _handle_connect(
 ) -> str:
     if server_name not in servers:
         permitted = ", ".join(sorted(servers))
-        raise MCPClientToolError(f"Server {server_name!r} is not on the allowlist. Permitted servers: {permitted}")
+        raise MCPClientToolError(f"Server {server_name!r} is not on the MCP server allowlist: {permitted}")
 
     config = cast(dict[str, Any], servers[server_name])
     loaded = MCPClient.load_servers({server_name: config})
     if not loaded:
-        raise MCPClientToolError(f"Server {server_name!r} failed to initialise; check the server config")
+        raise MCPClientToolError(
+            f"Server {server_name!r} failed to initialise; check the server config"
+        )
     client = loaded[0]
 
     try:
@@ -185,7 +195,7 @@ async def _handle_connect(
         connections = {}
         connections_map[agent] = connections
         # Stop all open connections if the agent is garbage collected without calling disconnect.
-        weakref.finalize(agent, _cleanup, connections)
+        weakref.finalize(agent, _stop_clients_in_background, connections)
 
     if len(connections) >= max_connections:
         _stop_client(client)

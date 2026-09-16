@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import threading
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -101,7 +102,7 @@ class TestConnect:
     @pytest.mark.asyncio
     async def test_url_not_on_allowlist_is_rejected(self) -> None:
         tool = make_mcp_client(servers={"mcp": {"url": "https://mcp.example.com/mcp"}})
-        with pytest.raises(MCPClientToolError, match="not on the allowlist"):
+        with pytest.raises(MCPClientToolError, match="not on the MCP server allowlist"):
             await tool(command="connect", server_name="evil", connection_id="c1", tool_context=_tool_context())
 
     @pytest.mark.asyncio
@@ -311,6 +312,20 @@ class TestSessionLifecycle:
             tools = await tool(command="list_tools", connection_id="c1", tool_context=_tool_context(agent))
         assert tools[0]["name"] == "echo"
 
+    @pytest.mark.asyncio
+    async def test_open_connection_stopped_on_agent_gc(self) -> None:
+        tool = make_mcp_client(servers={"mcp": {"url": "https://mcp.example.com/mcp"}})
+        client_class, instance = _fake_mcp_client_class()
+        agent = _StubAgent()
+
+        with patch("strands.vended_tools.mcp_client.mcp_client.MCPClient.load_servers", client_class):
+            await tool(command="connect", server_name="mcp", connection_id="c1", tool_context=_tool_context(agent))
+
+        del agent
+        gc.collect()
+
+        instance.stop.assert_called_once()
+
 
 class TestConfigForwarding:
     """The matched server config is forwarded correctly to MCPClient."""
@@ -349,6 +364,14 @@ class TestToolMetadata:
     def test_custom_name(self) -> None:
         t = make_mcp_client(servers={"mcp": {"url": "https://mcp.example.com/mcp"}}, name="my_mcp")
         assert t.tool_name == "my_mcp"
+
+    def test_description_suffix_overrides_default_suffix(self) -> None:
+        t = make_mcp_client(
+            servers={"mcp": {"url": "https://mcp.example.com/mcp"}},
+            description_suffix="Use only for testing.",
+        )
+        assert "Use only for testing." in t.tool_spec["description"]
+        assert "Permitted server names" not in t.tool_spec["description"]
 
     def test_schema_exposes_expected_fields(self) -> None:
         t = make_mcp_client(servers={"mcp": {"url": "https://mcp.example.com/mcp"}})
