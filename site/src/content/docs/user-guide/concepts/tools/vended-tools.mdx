@@ -523,19 +523,12 @@ Two operations are available:
 The tool is stateless: a fresh ``A2AAgent`` is created on every call unless
 a ``client_config`` with a shared ``httpx_client`` is provided.
 Use ``make_a2a_client`` to restrict which endpoints the model may contact, supply the transport, or tune size limits.
+Requires `pip install 'strands-agents[a2a]'`.
 
 _Supported in: Python._
 
-:::note[Install required]
-`a2a_client` requires the optional `a2a` extra:
-
-```bash
-pip install 'strands-agents[a2a]'
-```
-:::
-
 :::caution[Endpoint security]
-`allowed_endpoints` is required and checked before any network connection is made, but it only gates the agent-card fetch. `send_message` is delivered to the `url` in that card, which may point to a different host, and HTTP redirects are not checked either. For full egress control, enforce it at the network layer — a network policy or microVM — where it applies to all outbound connections.
+`allowed_endpoints` is required and checked before any network connection is made, but it only gates the agent-card fetch. `send_message` is delivered to the `url` in that card, which may point to a different host, and HTTP redirects are not checked either. For full egress control, enforce it at the network layer.
 :::
 
 **Example:**

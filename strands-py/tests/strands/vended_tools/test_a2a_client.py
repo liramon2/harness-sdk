@@ -198,12 +198,19 @@ class TestFactory:
         assert "https://a.example.com" in desc
         assert "https://b.example.com" in desc
 
-    def test_custom_description_is_used(self):
+    def test_custom_description_suffix_is_used(self):
+        tool = make_a2a_client(
+            description_suffix="Only agents I trust.",
+            allowed_endpoints=["https://agent.example.com"],
+        )
+        assert tool.tool_spec["description"].endswith("Only agents I trust.")
+
+    def test_custom_description_overrides_base(self):
         tool = make_a2a_client(
             description="My custom description",
             allowed_endpoints=["https://agent.example.com"],
         )
-        assert tool.tool_spec["description"] == "My custom description"
+        assert tool.tool_spec["description"].startswith("My custom description")
 
     def test_lazy_load_from_vended_tools(self):
         import strands.vended_tools as vt

@@ -38,7 +38,8 @@ class A2AClientError(RuntimeError):
 def make_a2a_client(
     *,
     name: str = "a2a_client",
-    description: str | None = None,
+    description: str = DEFAULT_A2A_CLIENT_DESCRIPTION,
+    description_suffix: str | None = None,
     allowed_endpoints: list[str],
     client_config: ClientConfig | None = None,
     timeout: int = _DEFAULT_TIMEOUT,
@@ -48,9 +49,9 @@ def make_a2a_client(
 
     Args:
         name: Tool name shown to the model.
-        description: Tool description shown to the model.  When ``None``, a
-            description is generated automatically, including the list of
-            permitted endpoints.
+        description: Base tool description shown to the model.
+        description_suffix: Appended to ``description`` to form the full tool
+            description.  When ``None``, defaults to the permitted endpoints list.
         allowed_endpoints: List of permitted base URLs.  Any endpoint not in
             this list is rejected before a network connection is made.
         client_config: Optional :class:`~a2a.client.ClientConfig` for
@@ -70,11 +71,12 @@ def make_a2a_client(
     if max_bytes <= 0:
         raise ValueError(f"max_bytes must be positive, got {max_bytes}")
 
-    if description is None:
+    if description_suffix is None:
         endpoints_list = ", ".join(sorted(_allowed))
-        description = f"{DEFAULT_A2A_CLIENT_DESCRIPTION} Permitted endpoints: {endpoints_list}."
+        description_suffix = f"Permitted endpoints: {endpoints_list}."
+    resolved_description = f"{description} {description_suffix}"
 
-    @tool(name=name, description=description)
+    @tool(name=name, description=resolved_description)
     async def a2a_client_tool(
         operation: Literal["discover", "send_message"],
         endpoint: str,
@@ -106,19 +108,19 @@ def make_a2a_client(
         agent = A2AAgent(endpoint, client_config=client_config, timeout=timeout)
 
         if operation == "discover":
-            return await _discover(agent, max_bytes)
+            return await _handle_discover(agent, max_bytes)
 
         if operation == "send_message":
             if not message:
                 raise A2AClientError("'message' is required for send_message operation")
-            return await _send_message(agent, message, max_bytes)
+            return await _handle_send_message(agent, message, max_bytes)
 
         raise A2AClientError(f"Unknown operation: {operation!r}")
 
     return a2a_client_tool
 
 
-async def _discover(agent: A2AAgent, max_bytes: int) -> _A2AClientOutput:
+async def _handle_discover(agent: A2AAgent, max_bytes: int) -> _A2AClientOutput:
     """Fetch the agent card via *agent* and return it as a dict."""
     try:
         agent_card = await agent.get_agent_card()
@@ -132,7 +134,7 @@ async def _discover(agent: A2AAgent, max_bytes: int) -> _A2AClientOutput:
     return result
 
 
-async def _send_message(agent: A2AAgent, message_text: str, max_bytes: int) -> _A2AClientOutput:
+async def _handle_send_message(agent: A2AAgent, message_text: str, max_bytes: int) -> _A2AClientOutput:
     """Send *message_text* via *agent* and return the response as a dict."""
     try:
         agent_result = await agent.invoke_async(message_text)
