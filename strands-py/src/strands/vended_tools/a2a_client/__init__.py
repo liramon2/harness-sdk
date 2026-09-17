@@ -27,9 +27,8 @@ Example Usage:
     ```
 """
 
-from .a2a_client import A2AClientError, make_a2a_client
+from .a2a_client import make_a2a_client
 
 __all__ = [
-    "A2AClientError",
     "make_a2a_client",
 ]

@@ -8,7 +8,8 @@ import pytest
 from a2a.client import ClientConfig
 
 import strands.vended_tools.a2a_client.a2a_client as a2a_client_module
-from strands.vended_tools.a2a_client import A2AClientError, make_a2a_client
+from strands.vended_tools.a2a_client import make_a2a_client
+from strands.vended_tools.a2a_client.a2a_client import A2AClientError
 
 _FAKE_CARD = {
     "name": "Test Agent",
