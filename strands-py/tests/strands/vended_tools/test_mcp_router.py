@@ -365,13 +365,6 @@ class TestToolMetadata:
         t = make_mcp_router(servers={"mcp": {"url": "https://mcp.example.com/mcp"}}, name="my_mcp")
         assert t.tool_name == "my_mcp"
 
-    def test_description_suffix_overrides_default_suffix(self) -> None:
-        t = make_mcp_router(
-            servers={"mcp": {"url": "https://mcp.example.com/mcp"}},
-            description_suffix="Use only for testing.",
-        )
-        assert "Use only for testing." in t.tool_spec["description"]
-        assert "Permitted server names" not in t.tool_spec["description"]
 
     def test_schema_exposes_expected_fields(self) -> None:
         t = make_mcp_router(servers={"mcp": {"url": "https://mcp.example.com/mcp"}})

@@ -40,8 +40,7 @@ class MCPRouterToolError(RuntimeError):
 def make_mcp_router(
     *,
     name: str = "mcp_router",
-    description: str = MCP_ROUTER_DESCRIPTION,
-    description_suffix: str | None = None,
+    description: str | None = None,
     servers: dict[str, MCPServerConfig],
     max_connections: int = _DEFAULT_MAX_CONNECTIONS,
 ) -> DecoratedFunctionTool:
@@ -49,10 +48,8 @@ def make_mcp_router(
 
     Args:
         name: Tool name shown to the model.
-        description: Base tool description shown to the model.
-        description_suffix: Text appended to ``description``, replacing the auto-generated
-            permitted-server-names list. Defaults to ``"Permitted server names: 'a', 'b'."``
-            derived from ``servers``.
+        description: Tool description shown to the model. Defaults to a description
+            that includes the permitted server names.
         servers: Allowlisted servers keyed by name. The name is passed to ``connect``; the config
             is forwarded to :class:`~strands.tools.mcp.MCPClient`. Must not be empty.
         max_connections: Maximum simultaneous open connections per agent. Defaults to ``10``.
@@ -68,15 +65,14 @@ def make_mcp_router(
     if max_connections < 1:
         raise ValueError("`max_connections` must be at least 1")
 
-    if description_suffix is None:
+    if description is None:
         permitted = ", ".join(f"'{s}'" for s in sorted(servers))
-        description_suffix = f"Permitted server names: {permitted}."
-    resolved_description = f"{description} {description_suffix}"
+        description = f"{MCP_ROUTER_DESCRIPTION} Permitted server names: {permitted}."
 
     # Per-agent connections with WeakKeyDictionary so agents can be garbage collected.
     connections_map: weakref.WeakKeyDictionary[Any, dict[str, MCPClient]] = weakref.WeakKeyDictionary()
 
-    @tool(name=name, description=resolved_description, context="tool_context")
+    @tool(name=name, description=description, context="tool_context")
     async def mcp_router_tool(
         command: Literal["connect", "list_tools", "call_tool", "disconnect"],
         tool_context: ToolContext,

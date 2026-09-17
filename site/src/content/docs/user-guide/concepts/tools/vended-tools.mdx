@@ -492,50 +492,17 @@ The allowlist controls which servers the model may connect to. For HTTP servers,
 from strands import Agent
 from strands.vended_tools import make_mcp_router
 
-mcp_router = make_mcp_router(servers={
-    "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
-    "my-api": {"url": "https://mcp.example.com/mcp"},
-})
-agent = Agent(tools=[mcp_router])
-agent(
-    "Connect to 'files', list its tools, "
-    "call the read_file tool on /tmp/hello.txt, then disconnect."
-)
-```
-
-</Tab>
-</Tabs>
-
-**Custom configuration:**
-
-<Tabs>
-<Tab label="Python">
-
-```python
-from strands import Agent
-from strands.vended_tools import make_mcp_router
-
 mcp_router = make_mcp_router(
-    name="mcp_router",
-    description="Routes agent requests to permitted MCP servers.",
-    description_suffix="Use 'files' for filesystem access and 'api' for REST calls.",
     servers={
-        "files": {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-            "env": {"NODE_ENV": "production"},
-        },
-        "api": {
-            "url": "https://mcp.example.com/mcp",
-            "headers": {"Authorization": "Bearer ${env:API_TOKEN}"},
-        },
+        "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
+        "my-api": {"url": "https://mcp.example.com/mcp"},
     },
     max_connections=5,
 )
 agent = Agent(tools=[mcp_router])
 agent(
-    "Connect to 'files' with connection_id 'fs', connect to 'api' with "
-    "connection_id 'api', list tools on each, then disconnect both."
+    "Connect to 'files', list its tools, "
+    "call the read_file tool on /tmp/hello.txt, then disconnect."
 )
 ```
 
