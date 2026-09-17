@@ -1,6 +1,6 @@
-"""Agent-callable MCP client tool.
+"""Agent-callable MCP router tool.
 
-Provides :func:`make_mcp_client` (a factory bound to a developer-set server allowlist).
+Provides :func:`make_mcp_router` (a factory bound to a developer-set server allowlist).
 
 The tool exposes four commands — ``connect``, ``list_tools``, ``call_tool``,
 ``disconnect`` — letting an agent open named connections to MCP servers, discover their
@@ -23,7 +23,7 @@ from ...tools.mcp.mcp_agent_tool import MCPAgentTool
 from ...tools.mcp.mcp_client import MCPClient, MCPServerConfig
 from ...tools.mcp.mcp_types import MCPToolResult
 from ...types.tools import ToolContext, ToolSpec
-from .types import MCP_CLIENT_DESCRIPTION
+from .types import MCP_ROUTER_DESCRIPTION
 
 if TYPE_CHECKING:
     from ...tools.decorator import DecoratedFunctionTool
@@ -33,19 +33,19 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_CONNECTIONS = 10
 
 
-class MCPClientToolError(RuntimeError):
-    """Raised when an mcp_client tool operation fails."""
+class MCPRouterToolError(RuntimeError):
+    """Raised when an mcp_router tool operation fails."""
 
 
-def make_mcp_client(
+def make_mcp_router(
     *,
-    name: str = "mcp_client",
-    description: str = MCP_CLIENT_DESCRIPTION,
+    name: str = "mcp_router",
+    description: str = MCP_ROUTER_DESCRIPTION,
     description_suffix: str | None = None,
     servers: dict[str, MCPServerConfig],
     max_connections: int = _DEFAULT_MAX_CONNECTIONS,
 ) -> DecoratedFunctionTool:
-    """Create an agent-callable MCP client tool bound to a developer-set server allowlist.
+    """Create an agent-callable MCP router tool bound to a developer-set server allowlist.
 
     Args:
         name: Tool name shown to the model.
@@ -64,7 +64,7 @@ def make_mcp_client(
         ValueError: If ``servers`` is empty or ``max_connections`` is not positive.
     """
     if not servers:
-        raise ValueError("`servers` must not be empty; the mcp_client tool requires at least one server")
+        raise ValueError("`servers` must not be empty; the mcp_router tool requires at least one server")
     if max_connections < 1:
         raise ValueError("`max_connections` must be at least 1")
 
@@ -77,7 +77,7 @@ def make_mcp_client(
     connections_map: weakref.WeakKeyDictionary[Any, dict[str, MCPClient]] = weakref.WeakKeyDictionary()
 
     @tool(name=name, description=resolved_description, context="tool_context")
-    async def mcp_client_tool(
+    async def mcp_router_tool(
         command: Literal["connect", "list_tools", "call_tool", "disconnect"],
         tool_context: ToolContext,
         connection_id: str | None = None,
@@ -97,31 +97,31 @@ def make_mcp_client(
             arguments: Arguments to pass to the invoked tool, for ``call_tool``.
 
         Raises:
-            MCPClientToolError: If a required argument is missing, the server is not on
+            MCPRouterToolError: If a required argument is missing, the server is not on
                 the allowlist, the connection cap is reached, no matching connection exists,
                 or the connection fails to start.
         """
         agent = tool_context.agent
 
         if not connection_id:
-            raise MCPClientToolError("`connection_id` is required for all commands")
+            raise MCPRouterToolError("`connection_id` is required for all commands")
 
         if command == "connect":
             if not server_name:
-                raise MCPClientToolError("`server_name` is required for command='connect'")
+                raise MCPRouterToolError("`server_name` is required for command='connect'")
             return await _handle_connect(connections_map, agent, servers, server_name, connection_id, max_connections)
 
         connections = connections_map.get(agent, {})
         client = connections.get(connection_id)
         if client is None:
-            raise MCPClientToolError(f"No active connection for id {connection_id!r}")
+            raise MCPRouterToolError(f"No active connection for id {connection_id!r}")
 
         if command == "list_tools":
             return await asyncio.to_thread(_handle_list_tools, client)
 
         if command == "call_tool":
             if not tool_name:
-                raise MCPClientToolError("`tool_name` is required for command='call_tool'")
+                raise MCPRouterToolError("`tool_name` is required for command='call_tool'")
             return await client.call_tool_async(
                 tool_use_id=str(uuid4()),
                 name=tool_name,
@@ -132,9 +132,9 @@ def make_mcp_client(
         if command == "disconnect":
             return await _handle_disconnect(connections, connection_id)
 
-        raise MCPClientToolError(f"Unknown command: {command}")
+        raise MCPRouterToolError(f"Unknown command: {command}")
 
-    return mcp_client_tool
+    return mcp_router_tool
 
 
 # ---- Internals ----------------------------------------------------------------
@@ -172,14 +172,12 @@ async def _handle_connect(
 ) -> str:
     if server_name not in servers:
         permitted = ", ".join(sorted(servers))
-        raise MCPClientToolError(f"Server {server_name!r} is not on the MCP server allowlist: {permitted}")
+        raise MCPRouterToolError(f"Server {server_name!r} is not on the MCP server allowlist: {permitted}")
 
     config = cast(dict[str, Any], servers[server_name])
     loaded = MCPClient.load_servers({server_name: config})
     if not loaded:
-        raise MCPClientToolError(
-            f"Server {server_name!r} failed to initialise; check the server config"
-        )
+        raise MCPRouterToolError(f"Server {server_name!r} failed to initialise; check the server config")
     client = loaded[0]
 
     try:
@@ -200,7 +198,7 @@ async def _handle_connect(
     if len(connections) >= max_connections:
         _stop_client(client)
         active_ids = ", ".join(sorted(connections))
-        raise MCPClientToolError(
+        raise MCPRouterToolError(
             f"Connection limit of {max_connections} reached. "
             f"Disconnect one of the active connections before opening a new one. "
             f"Active connection_ids: {active_ids}"
@@ -208,7 +206,7 @@ async def _handle_connect(
 
     if connection_id in connections:
         _stop_client(client)
-        raise MCPClientToolError(
+        raise MCPRouterToolError(
             f"Connection {connection_id!r} already exists. Disconnect it first or use a different connection_id."
         )
 
