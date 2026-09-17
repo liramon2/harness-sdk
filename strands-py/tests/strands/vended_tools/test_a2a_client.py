@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from a2a.client import ClientConfig
 
 import strands.vended_tools.a2a_client.a2a_client as a2a_client_module
 from strands.vended_tools.a2a_client import A2AClientError, make_a2a_client
@@ -22,6 +23,9 @@ _FAKE_CARD = {
 
 _FAKE_MESSAGE = {"role": "assistant", "content": [{"text": "Hello from agent"}]}
 
+_ENDPOINT = "https://agent.example.com"
+_ENDPOINTS: dict[str, ClientConfig | None] = {_ENDPOINT: None}
+
 
 class _FakeAgentCard:
     def model_dump(self, *, mode: str, exclude_none: bool) -> dict[str, Any]:
@@ -36,6 +40,7 @@ class _FakeAgentResult:
 class _FakeA2AAgent:
     def __init__(self, endpoint: str, *, client_config: Any = None, timeout: int = 300) -> None:
         self.endpoint = endpoint
+        self.client_config = client_config
 
     async def get_agent_card(self) -> _FakeAgentCard:
         return _FakeAgentCard()
@@ -52,7 +57,7 @@ def fake_agent(monkeypatch):
 class TestAllowlist:
     @pytest.mark.asyncio
     async def test_rejects_endpoint_not_in_allowlist(self):
-        tool = make_a2a_client(allowed_endpoints=["https://a.example.com", "https://b.example.com"])
+        tool = make_a2a_client(allowed_endpoints={"https://a.example.com": None, "https://b.example.com": None})
         with pytest.raises(A2AClientError, match="not in the allowed endpoints list") as exc_info:
             await tool(operation="discover", endpoint="https://evil.example.com")
         assert "https://a.example.com" in str(exc_info.value)
@@ -61,8 +66,8 @@ class TestAllowlist:
 class TestDiscover:
     @pytest.mark.asyncio
     async def test_returns_agent_card_dict(self, fake_agent):
-        tool = make_a2a_client(allowed_endpoints=["https://agent.example.com"])
-        tru_result = await tool(operation="discover", endpoint="https://agent.example.com")
+        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS)
+        tru_result = await tool(operation="discover", endpoint=_ENDPOINT)
         assert tru_result == _FAKE_CARD
 
     @pytest.mark.asyncio
@@ -74,9 +79,9 @@ class TestDiscover:
                 raise original
 
         monkeypatch.setattr(a2a_client_module, "A2AAgent", _FailingAgent)
-        tool = make_a2a_client(allowed_endpoints=["https://agent.example.com"])
+        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS)
         with pytest.raises(A2AClientError, match="Failed to discover agent card") as exc_info:
-            await tool(operation="discover", endpoint="https://agent.example.com")
+            await tool(operation="discover", endpoint=_ENDPOINT)
         assert exc_info.value.__cause__ is original
 
     @pytest.mark.asyncio
@@ -88,28 +93,24 @@ class TestDiscover:
                 return card
 
         monkeypatch.setattr(a2a_client_module, "A2AAgent", _BigCardAgent)
-        tool = make_a2a_client(allowed_endpoints=["https://agent.example.com"], max_bytes=100)
+        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS, max_bytes=100)
         with pytest.raises(A2AClientError, match="exceeds max_bytes limit"):
-            await tool(operation="discover", endpoint="https://agent.example.com")
+            await tool(operation="discover", endpoint=_ENDPOINT)
 
 
 class TestSendMessage:
     @pytest.mark.asyncio
     async def test_returns_message_dict(self, fake_agent):
-        tool = make_a2a_client(allowed_endpoints=["https://agent.example.com"])
-        tru_result = await tool(
-            operation="send_message",
-            endpoint="https://agent.example.com",
-            message="Hello",
-        )
+        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS)
+        tru_result = await tool(operation="send_message", endpoint=_ENDPOINT, message="Hello")
         assert tru_result == {"message": _FAKE_MESSAGE}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("message", [None, ""])
     async def test_missing_message_raises(self, message):
-        tool = make_a2a_client(allowed_endpoints=["https://agent.example.com"])
+        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS)
         with pytest.raises(A2AClientError, match="'message' is required"):
-            await tool(operation="send_message", endpoint="https://agent.example.com", message=message)
+            await tool(operation="send_message", endpoint=_ENDPOINT, message=message)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -133,13 +134,9 @@ class TestSendMessage:
                 return result
 
         monkeypatch.setattr(a2a_client_module, "A2AAgent", _NonCompletedAgent)
-        tool = make_a2a_client(allowed_endpoints=["https://agent.example.com"])
+        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS)
         with pytest.raises(A2AClientError, match=task_state) as exc_info:
-            await tool(
-                operation="send_message",
-                endpoint="https://agent.example.com",
-                message="Hello",
-            )
+            await tool(operation="send_message", endpoint=_ENDPOINT, message="Hello")
         if detail_text:
             assert detail_text in str(exc_info.value)
 
@@ -152,13 +149,9 @@ class TestSendMessage:
                 raise original
 
         monkeypatch.setattr(a2a_client_module, "A2AAgent", _FailingAgent)
-        tool = make_a2a_client(allowed_endpoints=["https://agent.example.com"])
+        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS)
         with pytest.raises(A2AClientError, match="Failed to send message") as exc_info:
-            await tool(
-                operation="send_message",
-                endpoint="https://agent.example.com",
-                message="Hello",
-            )
+            await tool(operation="send_message", endpoint=_ENDPOINT, message="Hello")
         assert exc_info.value.__cause__ is original
 
     @pytest.mark.asyncio
@@ -170,30 +163,26 @@ class TestSendMessage:
                 return result
 
         monkeypatch.setattr(a2a_client_module, "A2AAgent", _BigResponseAgent)
-        tool = make_a2a_client(allowed_endpoints=["https://agent.example.com"], max_bytes=100)
+        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS, max_bytes=100)
         with pytest.raises(A2AClientError, match="exceeds max_bytes limit"):
-            await tool(
-                operation="send_message",
-                endpoint="https://agent.example.com",
-                message="Hello",
-            )
+            await tool(operation="send_message", endpoint=_ENDPOINT, message="Hello")
 
 
 class TestFactory:
     def test_empty_allowed_endpoints_raises(self):
         with pytest.raises(ValueError, match="allowed_endpoints must contain at least one endpoint"):
-            make_a2a_client(allowed_endpoints=[])
+            make_a2a_client(allowed_endpoints={})
 
     def test_non_positive_max_bytes_raises(self):
         with pytest.raises(ValueError, match="max_bytes must be positive"):
-            make_a2a_client(allowed_endpoints=["https://agent.example.com"], max_bytes=0)
+            make_a2a_client(allowed_endpoints=_ENDPOINTS, max_bytes=0)
 
     def test_custom_name(self):
-        tool = make_a2a_client(name="my_agent", allowed_endpoints=["https://agent.example.com"])
+        tool = make_a2a_client(name="my_agent", allowed_endpoints=_ENDPOINTS)
         assert tool.tool_name == "my_agent"
 
     def test_description_includes_endpoints(self):
-        tool = make_a2a_client(allowed_endpoints=["https://a.example.com", "https://b.example.com"])
+        tool = make_a2a_client(allowed_endpoints={"https://a.example.com": None, "https://b.example.com": None})
         desc = tool.tool_spec["description"]
         assert "https://a.example.com" in desc
         assert "https://b.example.com" in desc
@@ -201,16 +190,31 @@ class TestFactory:
     def test_custom_description_suffix_is_used(self):
         tool = make_a2a_client(
             description_suffix="Only agents I trust.",
-            allowed_endpoints=["https://agent.example.com"],
+            allowed_endpoints=_ENDPOINTS,
         )
         assert tool.tool_spec["description"].endswith("Only agents I trust.")
 
     def test_custom_description_overrides_base(self):
         tool = make_a2a_client(
             description="My custom description",
-            allowed_endpoints=["https://agent.example.com"],
+            allowed_endpoints=_ENDPOINTS,
         )
         assert tool.tool_spec["description"].startswith("My custom description")
+
+    @pytest.mark.asyncio
+    async def test_per_endpoint_config_is_passed_to_agent(self, monkeypatch):
+        seen_config: list[Any] = []
+
+        class _CapturingAgent(_FakeA2AAgent):
+            def __init__(self, endpoint: str, *, client_config: Any = None, timeout: int = 300) -> None:
+                super().__init__(endpoint, client_config=client_config, timeout=timeout)
+                seen_config.append(client_config)
+
+        monkeypatch.setattr(a2a_client_module, "A2AAgent", _CapturingAgent)
+        config = ClientConfig()
+        tool = make_a2a_client(allowed_endpoints={_ENDPOINT: config})
+        await tool(operation="discover", endpoint=_ENDPOINT)
+        assert seen_config[0] is config
 
     def test_lazy_load_from_vended_tools(self):
         import strands.vended_tools as vt

@@ -520,9 +520,10 @@ Two operations are available:
 - **`discover`** — fetches the agent card from a remote A2A endpoint and returns its capabilities, name, description, and skills.
 - **`send_message`** — sends a text message to a remote A2A agent and returns the response.
 
-The tool is stateless: a fresh ``A2AAgent`` is created on every call unless
-a ``client_config`` with a shared ``httpx_client`` is provided.
-Use ``make_a2a_client`` to restrict which endpoints the model may contact, supply the transport, or tune size limits.
+The tool is stateless: a fresh ``A2AAgent`` is created on every call using the
+:class:`~a2a.client.ClientConfig` configured for that endpoint.
+Use ``make_a2a_client`` to control which endpoints the model may contact, with
+per-endpoint authentication, and to tune size limits.
 Requires `pip install 'strands-agents[a2a]'`.
 
 _Supported in: Python._
@@ -534,36 +535,25 @@ _Supported in: Python._
 **Example:**
 
 ```python
-from strands import Agent
-from strands.vended_tools.a2a_client import make_a2a_client
-
-tool = make_a2a_client(
-    allowed_endpoints=["https://agent.example.com", "https://researcher.example.com"],
-)
-agent = Agent(tools=[tool])
-agent("Summarize the latest research from the agent at https://researcher.example.com")
-```
-
-With custom authentication and a tighter response cap:
-
-```python
 import httpx
 from a2a.client import ClientConfig
 from strands import Agent
 from strands.vended_tools.a2a_client import make_a2a_client
 
-config = ClientConfig(
-    httpx_client=httpx.AsyncClient(
-        headers={"Authorization": "Bearer your-token"},
-        timeout=60.0,
-    ),
-)
 tool = make_a2a_client(
-    allowed_endpoints=["https://agent.example.com", "https://researcher.example.com"],
-    client_config=config,
+    allowed_endpoints={
+        "https://agent.example.com": None,
+        "https://researcher.example.com": ClientConfig(
+            httpx_client=httpx.AsyncClient(
+                headers={"Authorization": "Bearer your-token"},
+                timeout=60.0,
+            ),
+        ),
+    },
     max_bytes=1 * 1024 * 1024,  # 1 MiB
 )
 agent = Agent(tools=[tool])
+agent("What has the research agent found recently?")
 ```
 
 ---
