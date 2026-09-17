@@ -37,8 +37,7 @@ class A2AClientError(RuntimeError):
 def make_a2a_client(
     *,
     name: str = "a2a_client",
-    description: str = DEFAULT_A2A_CLIENT_DESCRIPTION,
-    description_suffix: str | None = None,
+    description: str | None = None,
     allowed_endpoints: dict[str, ClientConfig | None],
     max_bytes: int = _DEFAULT_MAX_BYTES,
 ) -> DecoratedFunctionTool:
@@ -46,9 +45,9 @@ def make_a2a_client(
 
     Args:
         name: Tool name shown to the model.
-        description: Base tool description shown to the model.
-        description_suffix: Appended to ``description`` to form the full tool
-            description.  When ``None``, defaults to the permitted endpoints list.
+        description: Tool description shown to the model. When ``None``,
+            generated from ``DEFAULT_A2A_CLIENT_DESCRIPTION`` plus the
+            permitted endpoints list.
         allowed_endpoints: Mapping of permitted base URLs to their
             :class:`~a2a.client.ClientConfig`.  Use ``None`` as the value for
             endpoints that need no custom configuration. Any endpoint not in this
@@ -65,12 +64,11 @@ def make_a2a_client(
     if max_bytes <= 0:
         raise ValueError(f"max_bytes must be positive, got {max_bytes}")
 
-    if description_suffix is None:
+    if description is None:
         endpoints_list = ", ".join(sorted(allowed_endpoints))
-        description_suffix = f"Permitted endpoints: {endpoints_list}."
-    resolved_description = f"{description} {description_suffix}"
+        description = f"{DEFAULT_A2A_CLIENT_DESCRIPTION} Permitted endpoints: {endpoints_list}."
 
-    @tool(name=name, description=resolved_description)
+    @tool(name=name, description=description)
     async def a2a_client_tool(
         operation: Literal["discover", "send_message"],
         endpoint: str,

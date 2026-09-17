@@ -187,19 +187,12 @@ class TestFactory:
         assert "https://a.example.com" in desc
         assert "https://b.example.com" in desc
 
-    def test_custom_description_suffix_is_used(self):
-        tool = make_a2a_client(
-            description_suffix="Only agents I trust.",
-            allowed_endpoints=_ENDPOINTS,
-        )
-        assert tool.tool_spec["description"].endswith("Only agents I trust.")
-
-    def test_custom_description_overrides_base(self):
+    def test_custom_description_overrides(self):
         tool = make_a2a_client(
             description="My custom description",
             allowed_endpoints=_ENDPOINTS,
         )
-        assert tool.tool_spec["description"].startswith("My custom description")
+        assert tool.tool_spec["description"] == "My custom description"
 
     @pytest.mark.asyncio
     async def test_per_endpoint_config_is_passed_to_agent(self, monkeypatch):

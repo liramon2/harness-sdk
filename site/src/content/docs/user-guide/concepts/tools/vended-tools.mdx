@@ -550,32 +550,6 @@ a2a_client = make_a2a_client(
             ),
         ),
     },
-)
-agent = Agent(tools=[a2a_client])
-agent("What has the research agent found recently?")
-```
-
-Full configuration:
-
-```python
-import httpx
-from a2a.client import ClientConfig
-from strands import Agent
-from strands.vended_tools.a2a_client import make_a2a_client
-
-a2a_client = make_a2a_client(
-    name="a2a_client",
-    description="Interacts with research and general-purpose A2A agents.",
-    description_suffix="Allowed: https://agent.example.com, https://researcher.example.com.",
-    allowed_endpoints={
-        "https://agent.example.com": None,
-        "https://researcher.example.com": ClientConfig(
-            httpx_client=httpx.AsyncClient(
-                headers={"Authorization": "Bearer your-token"},
-                timeout=60.0,
-            ),
-        ),
-    },
     max_bytes=1 * 1024 * 1024,
 )
 agent = Agent(tools=[a2a_client])
