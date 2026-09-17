@@ -1,13 +1,13 @@
 """A2A client tool for communicating with remote A2A-protocol agents.
 
-Provides :func:`make_a2a_client`, a factory that requires an explicit allowlist
-of permitted endpoints, optional transport configuration, and size limits.
+Provides :func:`make_a2a_client`, a factory that requires an explicit mapping of
+permitted endpoints to their :class:`~a2a.client.ClientConfig`, plus optional size limits.
 
 The tool is a stateless shim over :class:`~strands.agent.a2a_agent.A2AAgent`.
 A fresh ``A2AAgent`` is constructed on every call so the tool carries no session
-state between invocations.  If the caller needs authentication (bearer tokens,
-SigV4, OAuth), pass a :class:`~a2a.client.ClientConfig` with a pre-configured
-``httpx_client`` to the factory.
+state between invocations.  Each endpoint may carry its own
+:class:`~a2a.client.ClientConfig` to support per-endpoint authentication
+(bearer tokens, SigV4, OAuth).
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ from .types import DEFAULT_A2A_CLIENT_DESCRIPTION, _A2AClientOutput
 if TYPE_CHECKING:
     from ...tools.decorator import DecoratedFunctionTool
 
-_DEFAULT_TIMEOUT = 300
 _DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -40,9 +39,7 @@ def make_a2a_client(
     name: str = "a2a_client",
     description: str = DEFAULT_A2A_CLIENT_DESCRIPTION,
     description_suffix: str | None = None,
-    allowed_endpoints: list[str],
-    client_config: ClientConfig | None = None,
-    timeout: int = _DEFAULT_TIMEOUT,
+    allowed_endpoints: dict[str, ClientConfig | None],
     max_bytes: int = _DEFAULT_MAX_BYTES,
 ) -> DecoratedFunctionTool:
     """Create an A2A client tool.
@@ -52,27 +49,24 @@ def make_a2a_client(
         description: Base tool description shown to the model.
         description_suffix: Appended to ``description`` to form the full tool
             description.  When ``None``, defaults to the permitted endpoints list.
-        allowed_endpoints: List of permitted base URLs.  Any endpoint not in
-            this list is rejected before a network connection is made.
-        client_config: Optional :class:`~a2a.client.ClientConfig` for
-            authentication and transport settings.  Passed through to
-            :class:`~strands.agent.a2a_agent.A2AAgent` on every call.
-        timeout: Timeout for HTTP operations in seconds.  Only used when
-            ``client_config`` does not supply an ``httpx_client``.
-        max_bytes: Maximum size in bytes returned to the model. Results larger
-            than this cap are rejected with an error.
+        allowed_endpoints: Mapping of permitted base URLs to their
+            :class:`~a2a.client.ClientConfig`.  Use ``None`` as the value for
+            endpoints that need no custom configuration. Any endpoint not in this
+            mapping is rejected before a network connection is made.
+        max_bytes: Maximum size in bytes of the result dict returned to the model.
+            Does not cap the network transfer or binary parts.
+            Results larger than this cap are rejected with an error.
 
     Returns:
         A decorated tool that communicates with A2A agents.
     """
-    _allowed = frozenset(allowed_endpoints)
-    if not _allowed:
+    if not allowed_endpoints:
         raise ValueError("allowed_endpoints must contain at least one endpoint")
     if max_bytes <= 0:
         raise ValueError(f"max_bytes must be positive, got {max_bytes}")
 
     if description_suffix is None:
-        endpoints_list = ", ".join(sorted(_allowed))
+        endpoints_list = ", ".join(sorted(allowed_endpoints))
         description_suffix = f"Permitted endpoints: {endpoints_list}."
     resolved_description = f"{description} {description_suffix}"
 
@@ -100,12 +94,13 @@ def make_a2a_client(
                 underlying A2A call fails.
         """
         # Check if the endpoint is allowed via exact-match.
-        if endpoint not in _allowed:
+        if endpoint not in allowed_endpoints:
             raise A2AClientError(
-                f"Endpoint '{endpoint}' is not in the allowed endpoints list. Permitted endpoints: {sorted(_allowed)}"
+                f"Endpoint '{endpoint}' is not in the allowed endpoints list. "
+                f"Permitted endpoints: {sorted(allowed_endpoints)}"
             )
 
-        agent = A2AAgent(endpoint, client_config=client_config, timeout=timeout)
+        agent = A2AAgent(endpoint, client_config=allowed_endpoints[endpoint])
 
         if operation == "discover":
             return await _handle_discover(agent, max_bytes)

@@ -1,23 +1,28 @@
 """A2A client tool for communicating with remote A2A-protocol agents.
 
-This tool is a stateless shim over :class:`~strands.agent.a2a_agent.A2AAgent`.
-Each call creates a fresh agent, makes the requested operation (``discover`` or
-``send_message``), and returns the result — no session state is held between calls.
+A stateless shim over :class:`~strands.agent.a2a_agent.A2AAgent` that exposes
+``discover`` and ``send_message`` operations via the ``@tool`` interface.
 
-Use :func:`make_a2a_client` to create a tool instance, supplying the required
-``allowed_endpoints`` list along with optional authentication via a
-:class:`~a2a.client.ClientConfig`, a ``timeout``, and a ``max_bytes`` cap.
-
-Requires the optional ``a2a`` extra::
-
-    pip install 'strands-agents[a2a]'
+Requires the optional ``a2a`` extra (``pip install 'strands-agents[a2a]'``)
+and is imported lazily, so accessing it without that extra raises :class:`ImportError`.
 
 Example Usage:
     ```python
+    import httpx
+    from a2a.client import ClientConfig
     from strands import Agent
     from strands.vended_tools.a2a_client import make_a2a_client
 
-    tool = make_a2a_client(allowed_endpoints=["https://agent.example.com"])
+    tool = make_a2a_client(
+        allowed_endpoints={
+            "https://agent.example.com": None,
+            "https://secure-agent.example.com": ClientConfig(
+                httpx_client=httpx.AsyncClient(
+                    headers={"Authorization": "Bearer your-token"},
+                ),
+            ),
+        }
+    )
     agent = Agent(tools=[tool])
     ```
 """
