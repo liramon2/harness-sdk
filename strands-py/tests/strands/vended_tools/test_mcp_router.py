@@ -358,13 +358,65 @@ class TestConfigForwarding:
         assert key == "my-api"
 
 
+class TestListConnections:
+    """list_connections returns current open connection IDs for the calling agent."""
+
+    @pytest.mark.asyncio
+    async def test_returns_sorted_open_connection_ids(self) -> None:
+        """Returns a comma-separated sorted string; empty string when no connections exist."""
+        tool = make_mcp_router(
+            servers={
+                "server-a": {"url": "https://a.example.com/mcp"},
+                "server-b": {"url": "https://b.example.com/mcp"},
+            }
+        )
+        agent = _StubAgent()
+
+        # No connections yet — no connection_id required and result is empty.
+        assert await tool(command="list_connections", tool_context=_tool_context(agent)) == ""
+
+        with patch("strands.vended_tools.mcp_router.mcp_router.MCPClient.load_servers") as client_cls:
+            client_cls.return_value = [_mcp_instance()]
+            await tool(
+                command="connect", server_name="server-a", connection_id="conn-a", tool_context=_tool_context(agent)
+            )
+            await tool(
+                command="connect", server_name="server-b", connection_id="conn-b", tool_context=_tool_context(agent)
+            )
+
+        assert await tool(command="list_connections", tool_context=_tool_context(agent)) == "conn-a, conn-b"
+
+    @pytest.mark.asyncio
+    async def test_excludes_disconnected_connections(self) -> None:
+        tool = make_mcp_router(servers={"mcp": {"url": "https://mcp.example.com/mcp"}})
+        agent = _StubAgent()
+        with patch("strands.vended_tools.mcp_router.mcp_router.MCPClient.load_servers") as client_cls:
+            client_cls.return_value = [_mcp_instance()]
+            await tool(command="connect", server_name="mcp", connection_id="c1", tool_context=_tool_context(agent))
+            await tool(command="connect", server_name="mcp", connection_id="c2", tool_context=_tool_context(agent))
+            await tool(command="disconnect", connection_id="c1", tool_context=_tool_context(agent))
+
+        assert await tool(command="list_connections", tool_context=_tool_context(agent)) == "c2"
+
+    @pytest.mark.asyncio
+    async def test_agent_isolation(self) -> None:
+        """list_connections for agent B does not include connections opened by agent A."""
+        tool = make_mcp_router(servers={"mcp": {"url": "https://mcp.example.com/mcp"}})
+        agent_a = _StubAgent(label="a")
+        agent_b = _StubAgent(label="b")
+        with patch("strands.vended_tools.mcp_router.mcp_router.MCPClient.load_servers") as client_cls:
+            client_cls.return_value = [_mcp_instance()]
+            await tool(command="connect", server_name="mcp", connection_id="c1", tool_context=_tool_context(agent_a))
+
+        assert await tool(command="list_connections", tool_context=_tool_context(agent_b)) == ""
+
+
 class TestToolMetadata:
     """The tool exposes a sensible name, description, and input schema."""
 
     def test_custom_name(self) -> None:
         t = make_mcp_router(servers={"mcp": {"url": "https://mcp.example.com/mcp"}}, name="my_mcp")
         assert t.tool_name == "my_mcp"
-
 
     def test_schema_exposes_expected_fields(self) -> None:
         t = make_mcp_router(servers={"mcp": {"url": "https://mcp.example.com/mcp"}})

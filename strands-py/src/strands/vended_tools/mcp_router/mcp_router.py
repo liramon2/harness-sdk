@@ -2,11 +2,11 @@
 
 Provides :func:`make_mcp_router` (a factory bound to a developer-set server allowlist).
 
-The tool exposes four commands — ``connect``, ``list_tools``, ``call_tool``,
-``disconnect`` — letting an agent open named connections to MCP servers, discover their
-tools, invoke them, and close the connections. Each server is configured with a
-:class:`~strands.tools.mcp.MCPServerConfig`; all fields are forwarded to
-:class:`~strands.tools.mcp.MCPClient`. Connections are isolated per agent.
+The tool exposes five commands — ``connect``, ``list_connections``, ``list_tools``,
+``call_tool``, ``disconnect`` — letting an agent open named connections to MCP servers,
+inspect active connections, discover their tools, invoke them, and close the connections.
+Each server is configured with a :class:`~strands.tools.mcp.MCPServerConfig`; all fields
+are forwarded to :class:`~strands.tools.mcp.MCPClient`. Connections are isolated per agent.
 """
 
 from __future__ import annotations
@@ -46,12 +46,16 @@ def make_mcp_router(
 ) -> DecoratedFunctionTool:
     """Create an agent-callable MCP router tool bound to a developer-set server allowlist.
 
+    MCP connections are scoped per agent and persist across invocations. They are closed when
+    the model calls ``disconnect`` explicitly or when the agent is garbage collected.
+    Connections remain open otherwise.
+
     Args:
         name: Tool name shown to the model.
         description: Tool description shown to the model. Defaults to a description
             that includes the permitted server names.
-        servers: Allowlisted servers keyed by name. The name is passed to ``connect``; the config
-            is forwarded to :class:`~strands.tools.mcp.MCPClient`. Must not be empty.
+        servers: Allowlisted servers keyed by name. The model identifies servers to connect to by name;
+            the config is forwarded to :class:`~strands.tools.mcp.MCPClient`. Must not be empty.
         max_connections: Maximum simultaneous open connections per agent. Defaults to ``10``.
 
     Returns:
@@ -74,7 +78,7 @@ def make_mcp_router(
 
     @tool(name=name, description=description, context="tool_context")
     async def mcp_router_tool(
-        command: Literal["connect", "list_tools", "call_tool", "disconnect"],
+        command: Literal["connect", "list_connections", "list_tools", "call_tool", "disconnect"],
         tool_context: ToolContext,
         connection_id: str | None = None,
         server_name: str | None = None,
@@ -84,11 +88,13 @@ def make_mcp_router(
         """Manage runtime MCP client connections.
 
         Args:
-            command: The operation to perform: ``connect``, ``list_tools``, ``call_tool``, ``disconnect``.
+            command: The operation to perform: ``connect``, ``list_connections``,
+                ``list_tools``, ``call_tool``, ``disconnect``.
             tool_context: Injected by the framework. Not user-facing.
             server_name: Server name to connect to, required for ``connect``.
-            connection_id: A descriptive name for this connection, required for all commands.
-                Must be unique per agent. Reusing an active id is rejected.
+            connection_id: A descriptive name for this connection, required for all commands
+                except ``list_connections``. Must be unique per agent. Reusing an active id
+                is rejected.
             tool_name: Tool name to invoke, required for ``call_tool``.
             arguments: Arguments to pass to the invoked tool, for ``call_tool``.
 
@@ -99,8 +105,11 @@ def make_mcp_router(
         """
         agent = tool_context.agent
 
+        if command == "list_connections":
+            return ", ".join(sorted(connections_map.get(agent, {})))
+
         if not connection_id:
-            raise MCPRouterToolError("`connection_id` is required for all commands")
+            raise MCPRouterToolError("`connection_id` is required for all commands except 'list_connections'")
 
         if command == "connect":
             if not server_name:
