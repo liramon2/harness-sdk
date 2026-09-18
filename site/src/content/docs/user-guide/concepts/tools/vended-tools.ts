@@ -10,7 +10,7 @@ import {
   FileStorage,
   InterruptResponseContent,
 } from '@strands-agents/sdk'
-import { handoffToUser } from '@strands-agents/sdk/vended-tools/handoff-to-user'
+import { handoffToUser, HANDOFF_INTERRUPT_NAME } from '@strands-agents/sdk/vended-tools/handoff-to-user'
 import { sleep, makeSleep } from '@strands-agents/sdk/vended-tools/sleep'
 import { stop } from '@strands-agents/sdk/experimental/vended-tools/stop'
 import { webFetch, makeWebFetch } from '@strands-agents/sdk/vended-tools/web-fetch'
@@ -162,8 +162,8 @@ async function handoffToUserExample() {
   })
 
   let result = await agent.invoke('Delete all .tmp files in /workspace.')
-  if (result.stopReason === 'interrupt') {
-    const interrupt = result.interrupts![0]
+  const interrupt = result.interrupts?.find((i) => i.name === HANDOFF_INTERRUPT_NAME)
+  if (interrupt) {
     console.log(interrupt.reason)
     result = await agent.invoke([
       new InterruptResponseContent({ interruptId: interrupt.id, response: 'confirmed' }),

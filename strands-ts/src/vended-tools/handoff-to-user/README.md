@@ -19,8 +19,8 @@ const agent = new Agent({
 
 // The agent stops when it calls the tool. The message is surfaced on the interrupt.
 let result = await agent.invoke('Delete all .tmp files in /workspace.')
-if (result.stopReason === 'interrupt') {
-  const interrupt = result.interrupts![0]
+const interrupt = result.interrupts?.find((i) => i.name === HANDOFF_INTERRUPT_NAME)
+if (interrupt) {
   console.log(interrupt.reason)
   // Resume with the user's reply, which becomes the tool result.
   result = await agent.invoke([new InterruptResponseContent({ interruptId: interrupt.id, response: 'confirmed' })])
