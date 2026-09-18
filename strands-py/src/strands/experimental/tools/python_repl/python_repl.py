@@ -86,7 +86,7 @@ def make_python_repl(
         max_memory: Maximum heap memory the sandbox may allocate, in bytes. Defaults to 100 MiB.
         max_output_chars: Maximum characters returned for output.
             Longer values are truncated. Defaults to 50,000.
-        max_session_bytes: Maximum size of the persisted session dump in bytes. Dumps exceeding this limit are
+        max_session_bytes: Maximum size of the raw session dump in bytes. Dumps exceeding this limit are
             not persisted; the previous session is kept and the next call resumes from that earlier state.
             Defaults to 10 MiB.
         timeout: Host-side deadline in seconds; kills the worker if exceeded. Backstops
@@ -112,7 +112,9 @@ def make_python_repl(
     if not isinstance(timeout, (int, float)) or timeout <= 0:
         raise ValueError(f"timeout must be a positive number, got {timeout}")
 
-    _state_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = weakref.WeakKeyDictionary()
+    _state_locks: weakref.WeakKeyDictionary[Any, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = (
+        weakref.WeakKeyDictionary()
+    )
 
     @tool(name=name, description=description, context="tool_context")
     async def python_repl_tool(
@@ -131,33 +133,31 @@ def make_python_repl(
             reset_state: When ``True``, discard any persisted session before executing. Defaults to ``False``.
         """
         limits = ResourceLimits(max_duration_secs=max_duration_secs, max_memory=max_memory)
-
         agent = tool_context.agent
-        if agent not in _state_locks:
-            _state_locks[agent] = asyncio.Lock()
-        async with _state_locks[agent]:
+
+        async with _get_lock(_state_locks, agent):
             if reset_state:
-                tool_context.agent.state.set(_STATE_KEY, None)
-            old_state = tool_context.agent.state.get(_STATE_KEY)
-            if old_state is not None and not isinstance(old_state, str):
-                raise PythonReplError("Malformed python_repl session state: expected a string")
+                agent.state.set(_STATE_KEY, None)
+            old_state = agent.state.get(_STATE_KEY)
 
             collector = CollectStreams()
 
             try:
-                _, new_state = await _await_bounded(
+                new_state = await _await_bounded(
                     _run_session(code, old_state, collector, limits, timeout),
                     tool_context.cancel_signal,
                 )
             except MontyError as error:
-                raise PythonReplError(_build_error_message(error, collector.output)) from error
+                raise PythonReplError(_build_error_message(error, collector.output, max_output_chars)) from error
 
+            # Get the truncated interpreter output
             output = "".join(text for _, text in collector.output)
             if len(output) > max_output_chars:
                 output = output[:max_output_chars] + "\n\n[output truncated]"
 
             if len(new_state) <= max_session_bytes:
-                tool_context.agent.state.set(_STATE_KEY, base64.b64encode(new_state).decode("ascii"))
+                # Convert the state to base64, making it JSON serializable like the rest of agent state
+                agent.state.set(_STATE_KEY, base64.b64encode(new_state).decode("ascii"))
             else:
                 logger.warning(
                     "session_bytes=<%d>, max_session_bytes=<%d> | session dump exceeds limit, discarding",
@@ -166,7 +166,7 @@ def make_python_repl(
                 )
                 output += "\n[warning: session state was too large to persist; this call's variables are not saved]"
 
-            return output
+            return output or "(no output)"
 
     return python_repl_tool
 
@@ -176,6 +176,20 @@ python_repl = make_python_repl()
 
 
 # ---- Internals ----
+
+
+def _get_lock(
+    locks: weakref.WeakKeyDictionary[Any, tuple[asyncio.AbstractEventLoop, asyncio.Lock]], agent: Any
+) -> asyncio.Lock:
+    """Return the agent's write lock for the running event loop, creating a fresh one per loop.
+
+    This protects the REPL state from concurrent read-modify-writes.
+    """
+    loop = asyncio.get_running_loop()
+    entry = locks.get(agent)
+    if entry is None or entry[0] is not loop:
+        locks[agent] = (loop, asyncio.Lock())
+    return locks[agent][1]
 
 
 async def _await_bounded(coro: Awaitable[Any], cancel_signal: threading.Event) -> Any:
@@ -189,11 +203,13 @@ async def _await_bounded(coro: Awaitable[Any], cancel_signal: threading.Event) -
         done, _ = await asyncio.wait({task, watch}, return_when=asyncio.FIRST_COMPLETED)
         if task in done:
             return task.result()
+        # Cancel signal fired. Drain the task before raising so it doesn't leak
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
         raise asyncio.CancelledError
     finally:
+        # Drain any task that didn't finish naturally
         for pending in (task, watch):
             if not pending.done():
                 pending.cancel()
@@ -213,30 +229,35 @@ async def _run_session(
     collector: CollectStreams,
     limits: Any,
     timeout: float,
-) -> tuple[Any, bytes]:
-    """Open a Monty pool, load prior state, execute code, and return the result value and new session dump."""
+) -> bytes:
+    """Execute code in a Monty sandbox and return the new state."""
     async with AsyncMonty(request_timeout=timeout) as pool:
+        # Load the state and run a session
         if old_state is not None:
             async with pool.checkout(limits=limits) as session:
                 try:
                     await session.load_session(base64.b64decode(old_state))
-                except (MontyError, binascii.Error) as error:
-                    logger.warning("error=<%s> | discarding unrestorable python_repl state", error)
+                except (MontyError, binascii.Error, TypeError) as error:
+                    logger.warning("error=<%s> | discarding unrestorable python_repl interpreter state", error)
                 else:
-                    value = await session.feed_run(code, print_callback=collector)
-                    return value, await session.dump()
+                    await session.feed_run(code, print_callback=collector)
+                    return await session.dump()
 
         # No prior state or restore failed — run in a fresh empty session
         async with pool.checkout(limits=limits) as session:
-            value = await session.feed_run(code, print_callback=collector)
-            return value, await session.dump()
+            await session.feed_run(code, print_callback=collector)
+            return await session.dump()
 
 
-def _build_error_message(error: Exception, output: list[tuple[Literal["stdout", "stderr"], str]]) -> str:
-    """Build the PythonReplError message from a MontyError and any captured stdout."""
+def _build_error_message(
+    error: Exception, output: list[tuple[Literal["stdout", "stderr"], str]], max_output_chars: int
+) -> str:
+    """Build an error message from a MontyError and any captured stdout."""
     message = str(error.display()) if isinstance(error, _ERRORS_WITH_DISPLAY) else str(error)
     sections = [message]
     stdout = "".join(text for _, text in output)
     if stdout:
+        if len(stdout) > max_output_chars:
+            stdout = stdout[:max_output_chars] + "\n\n[output truncated]"
         sections.append(f"--- stdout before failure ---\n{stdout}")
     return "\n\n".join(sections)
