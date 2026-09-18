@@ -1,8 +1,8 @@
-"""Code execution tool: run Python in a Monty sandbox.
+"""Python REPL tool: run Python in a Monty sandbox.
 
 This tool is experimental and subject to change in future revisions without notice.
 
-Provides :func:`make_code_execution` and the default :data:`code_execution`
+Provides :func:`make_python_repl` and the default :data:`python_repl`
 instance. Each call runs a snippet inside a `Monty <https://pydantic.dev/docs/monty/>`_
 worker subprocess with no filesystem, network, or environment access, bounded
 by memory and time limits.
@@ -10,8 +10,8 @@ by memory and time limits.
 Session state (variables, imports, and definitions) persists across calls via
 :attr:`~strands.Agent.state`. Pass ``reset_state=True`` to start fresh.
 
-Requires the optional ``code-execution`` extra
-(``pip install 'strands-agents[code-execution]'``).
+Requires the optional ``python-repl`` extra
+(``pip install 'strands-agents[python-repl]'``).
 """
 
 from __future__ import annotations
@@ -38,24 +38,24 @@ try:
     )
 except ImportError as error:
     raise ImportError(
-        "code_execution requires the 'code-execution' extra (pydantic-monty). "
-        "Install with: pip install 'strands-agents[code-execution]'"
+        "python_repl requires the 'python-repl' extra (pydantic-monty). "
+        "Install with: pip install 'strands-agents[python-repl]'"
     ) from error
 
 from ....tools.decorator import tool
 from ....types.tools import ToolContext
-from .types import CODE_EXECUTION_DESCRIPTION
+from .types import PYTHON_REPL_DESCRIPTION
 
 if TYPE_CHECKING:
     from ....tools.decorator import DecoratedFunctionTool
 
 logger = logging.getLogger(__name__)
 
-_STATE_KEY = "code_execution_session"
+_STATE_KEY = "python_repl_session"
 
 
-class CodeExecutionError(RuntimeError):
-    """Raised when code execution fails."""
+class PythonReplError(RuntimeError):
+    """Raised when Python REPL execution fails."""
 
 
 _ERRORS_WITH_DISPLAY = (MontyRuntimeError, MontySyntaxError, MontyTypingError)
@@ -67,33 +67,34 @@ _DEFAULT_MAX_OUTPUT_CHARS = 50_000
 _DEFAULT_MAX_SESSION_BYTES = 1024 * 1024 * 10  # 10 MiB
 
 
-def make_code_execution(
+def make_python_repl(
     *,
-    name: str = "code_execution",
-    description: str = CODE_EXECUTION_DESCRIPTION,
+    name: str = "python_repl",
+    description: str = PYTHON_REPL_DESCRIPTION,
     max_duration_secs: float = _DEFAULT_MAX_DURATION_SECS,
     max_memory: int = _DEFAULT_MAX_MEMORY_BYTES,
     max_output_chars: int = _DEFAULT_MAX_OUTPUT_CHARS,
     max_session_bytes: int = _DEFAULT_MAX_SESSION_BYTES,
     timeout: float = _DEFAULT_TIMEOUT_SECS,
 ) -> DecoratedFunctionTool:
-    """Create a code execution tool backed by a Monty sandbox.
+    """Create a Python REPL tool backed by a Monty sandbox.
 
     Args:
         name: Tool name exposed to the model.
         description: Tool description shown to the model.
         max_duration_secs: Maximum execution time per call in seconds, enforced inside the sandbox. Defaults to 30.
         max_memory: Maximum heap memory the sandbox may allocate, in bytes. Defaults to 100 MiB.
-        max_output_chars: Maximum characters returned for each of ``output``, ``error``, and ``result``.
+        max_output_chars: Maximum characters returned for output.
             Longer values are truncated. Defaults to 50,000.
         max_session_bytes: Maximum size of the persisted session dump in bytes. Dumps exceeding this limit are
-            not persisted. Defaults to 10 MiB.
+            not persisted; the previous session is kept and the next call resumes from that earlier state.
+            Defaults to 10 MiB.
         timeout: Host-side deadline in seconds; kills the worker if exceeded. Backstops
             ``max_duration_secs``. Defaults to 60.
 
     Returns:
         A decorated tool that executes Python code in a Monty sandbox and
-        returns its stdout, stderr, and trailing-expression value.
+        returns its stdout output.
 
     Raises:
         ValueError: If ``name`` is empty, or any limit is not positive.
@@ -114,7 +115,7 @@ def make_code_execution(
     _state_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = weakref.WeakKeyDictionary()
 
     @tool(name=name, description=description, context="tool_context")
-    async def code_execution_tool(
+    async def python_repl_tool(
         code: str,
         tool_context: ToolContext,
         reset_state: bool = False,
@@ -125,7 +126,7 @@ def make_code_execution(
         can build on earlier calls. Pass ``reset_state=True`` to start from an empty namespace.
 
         Args:
-            code: Python snippet to execute. Its trailing expression value, if any, is returned as ``result``.
+            code: Python snippet to execute.
             tool_context: Injected by the framework. Not user-facing.
             reset_state: When ``True``, discard any persisted session before executing. Defaults to ``False``.
         """
@@ -139,7 +140,7 @@ def make_code_execution(
                 tool_context.agent.state.set(_STATE_KEY, None)
             old_state = tool_context.agent.state.get(_STATE_KEY)
             if old_state is not None and not isinstance(old_state, str):
-                raise CodeExecutionError("Malformed code_execution session state: expected a string")
+                raise PythonReplError("Malformed python_repl session state: expected a string")
 
             collector = CollectStreams()
 
@@ -149,7 +150,7 @@ def make_code_execution(
                     tool_context.cancel_signal,
                 )
             except MontyError as error:
-                raise CodeExecutionError(_build_error_message(error, collector.output)) from error
+                raise PythonReplError(_build_error_message(error, collector.output)) from error
 
             output = "".join(text for _, text in collector.output)
             if len(output) > max_output_chars:
@@ -167,11 +168,11 @@ def make_code_execution(
 
             return output
 
-    return code_execution_tool
+    return python_repl_tool
 
 
-code_execution = make_code_execution()
-"""Default code execution tool."""
+python_repl = make_python_repl()
+"""Default Python REPL tool."""
 
 
 # ---- Internals ----
@@ -220,7 +221,7 @@ async def _run_session(
                 try:
                     await session.load_session(base64.b64decode(old_state))
                 except (MontyError, binascii.Error) as error:
-                    logger.warning("error=<%s> | discarding unrestorable code_execution state", error)
+                    logger.warning("error=<%s> | discarding unrestorable python_repl state", error)
                 else:
                     value = await session.feed_run(code, print_callback=collector)
                     return value, await session.dump()
@@ -232,7 +233,7 @@ async def _run_session(
 
 
 def _build_error_message(error: Exception, output: list[tuple[Literal["stdout", "stderr"], str]]) -> str:
-    """Build the CodeExecutionError message from a MontyError and any captured stdout."""
+    """Build the PythonReplError message from a MontyError and any captured stdout."""
     message = str(error.display()) if isinstance(error, _ERRORS_WITH_DISPLAY) else str(error)
     sections = [message]
     stdout = "".join(text for _, text in output)

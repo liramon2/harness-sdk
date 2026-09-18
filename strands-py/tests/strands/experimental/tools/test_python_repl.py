@@ -1,4 +1,4 @@
-"""Tests for the code_execution tool."""
+"""Tests for the python_repl tool."""
 
 import asyncio
 import base64
@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from strands.agent.state import AgentState
-from strands.experimental.tools.code_execution.code_execution import (
-    CodeExecutionError,
+from strands.experimental.tools.python_repl.python_repl import (
+    PythonReplError,
     _build_error_message,
-    make_code_execution,
+    make_python_repl,
 )
 from strands.types.tools import ToolContext
 
@@ -26,7 +26,7 @@ def _fresh_context(initial_state: dict | None = None) -> tuple[AgentState, ToolC
     agent = _Agent()
     agent.state = state  # type: ignore[attr-defined]
     ctx = ToolContext(
-        tool_use={"name": "code_execution", "toolUseId": "test-id", "input": {}},
+        tool_use={"name": "python_repl", "toolUseId": "test-id", "input": {}},
         agent=agent,
         invocation_state={},
     )
@@ -45,7 +45,7 @@ class _FakeMontyError(Exception):
         return str(self.args[0]) if self.args else ""
 
 
-_MODULE = "strands.experimental.tools.code_execution.code_execution"
+_MODULE = "strands.experimental.tools.python_repl.python_repl"
 
 
 def _mock_session(value: object = None, dump: bytes = b"session-dump") -> MagicMock:
@@ -74,13 +74,13 @@ def _make_monty_patch(session: MagicMock) -> MagicMock:
     return monty
 
 
-# ---- make_code_execution validation ----
+# ---- make_python_repl validation ----
 
 
-class TestMakeCodeExecution:
+class TestMakePythonRepl:
     def test_rejects_empty_name(self):
         with pytest.raises(ValueError, match="non-empty"):
-            make_code_execution(name="")
+            make_python_repl(name="")
 
     @pytest.mark.parametrize(
         "kwargs,match",
@@ -96,13 +96,13 @@ class TestMakeCodeExecution:
     )
     def test_rejects_invalid_limits(self, kwargs, match):
         with pytest.raises(ValueError, match=match):
-            make_code_execution(**kwargs)  # type: ignore[arg-type]
+            make_python_repl(**kwargs)  # type: ignore[arg-type]
 
     def test_factory_defaults_and_custom_overrides(self):
-        default_tool = make_code_execution()
-        assert default_tool.tool_name == "code_execution"
+        default_tool = make_python_repl()
+        assert default_tool.tool_name == "python_repl"
 
-        custom_tool = make_code_execution(name="py_exec", description="run code")
+        custom_tool = make_python_repl(name="py_exec", description="run code")
         assert custom_tool.tool_name == "py_exec"
         assert custom_tool.tool_spec["description"] == "run code"
 
@@ -116,7 +116,7 @@ class TestExecution:
         session = _mock_session(value=42)
         monty = _make_monty_patch(session)
         _, ctx = _fresh_context()
-        tool = make_code_execution()
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             tru_result = await tool(code="42", tool_context=ctx)
@@ -128,12 +128,12 @@ class TestExecution:
         session = _mock_session(dump=b"new-dump")
         monty = _make_monty_patch(session)
         state, ctx = _fresh_context()
-        tool = make_code_execution()
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             await tool(code="x = 1", tool_context=ctx)
 
-        tru_stored = state.get("code_execution_session")
+        tru_stored = state.get("python_repl_session")
         exp_stored = base64.b64encode(b"new-dump").decode("ascii")
         assert tru_stored == exp_stored
 
@@ -143,8 +143,8 @@ class TestExecution:
         prior_encoded = base64.b64encode(prior_dump).decode("ascii")
         session = _mock_session()
         monty = _make_monty_patch(session)
-        state, ctx = _fresh_context({"code_execution_session": prior_encoded})
-        tool = make_code_execution()
+        state, ctx = _fresh_context({"python_repl_session": prior_encoded})
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             await tool(code="x", tool_context=ctx)
@@ -161,8 +161,8 @@ class TestResetState:
         prior_encoded = base64.b64encode(b"stale").decode("ascii")
         session = _mock_session()
         monty = _make_monty_patch(session)
-        state, ctx = _fresh_context({"code_execution_session": prior_encoded})
-        tool = make_code_execution()
+        state, ctx = _fresh_context({"python_repl_session": prior_encoded})
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             await tool(code="x = 1", tool_context=ctx, reset_state=True)
@@ -181,15 +181,15 @@ class TestResetState:
         session.__aexit__ = AsyncMock(return_value=False)
         monty = _make_monty_patch(session)
 
-        state, ctx = _fresh_context({"code_execution_session": prior_encoded})
-        tool = make_code_execution()
+        state, ctx = _fresh_context({"python_repl_session": prior_encoded})
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             with patch(f"{_MODULE}.MontyError", _FakeMontyError):
-                with pytest.raises(CodeExecutionError):
+                with pytest.raises(PythonReplError):
                     await tool(code="raise ValueError()", tool_context=ctx, reset_state=True)
 
-        assert state.get("code_execution_session") is None
+        assert state.get("python_repl_session") is None
 
 
 # ---- Error handling ----
@@ -197,7 +197,7 @@ class TestResetState:
 
 class TestErrorHandling:
     @pytest.mark.asyncio
-    async def test_monty_error_becomes_code_execution_error(self):
+    async def test_monty_error_becomes_python_repl_error(self):
         session = MagicMock()
         session.feed_run = AsyncMock(side_effect=_FakeMontyError("name 'x' is not defined"))
         session.dump = AsyncMock(return_value=b"")
@@ -207,11 +207,11 @@ class TestErrorHandling:
         monty = _make_monty_patch(session)
 
         _, ctx = _fresh_context()
-        tool = make_code_execution()
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             with patch(f"{_MODULE}.MontyError", _FakeMontyError):
-                with pytest.raises(CodeExecutionError):
+                with pytest.raises(PythonReplError):
                     await tool(code="x", tool_context=ctx)
 
     @pytest.mark.asyncio
@@ -228,28 +228,28 @@ class TestErrorHandling:
         session.__aexit__ = AsyncMock(return_value=False)
         monty = _make_monty_patch(session)
 
-        _, ctx = _fresh_context({"code_execution_session": prior_encoded})
-        tool = make_code_execution()
+        _, ctx = _fresh_context({"python_repl_session": prior_encoded})
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             with patch(f"{_MODULE}.MontyError", _FakeMontyError):
-                with pytest.raises(CodeExecutionError, match="name 'data' is not defined"):
+                with pytest.raises(PythonReplError, match="name 'data' is not defined"):
                     await tool(code="data[10]", tool_context=ctx)
 
     @pytest.mark.asyncio
     async def test_malformed_state_raises(self):
-        state, ctx = _fresh_context({"code_execution_session": 12345})
-        tool = make_code_execution()
+        state, ctx = _fresh_context({"python_repl_session": 12345})
+        tool = make_python_repl()
 
-        with pytest.raises(CodeExecutionError, match="expected a string"):
+        with pytest.raises(PythonReplError, match="expected a string"):
             await tool(code="x", tool_context=ctx)
 
     @pytest.mark.asyncio
     async def test_corrupt_base64_discards_state_and_runs_fresh(self):
         session = _mock_session(value=7)
         monty = _make_monty_patch(session)
-        state, ctx = _fresh_context({"code_execution_session": "!!!not-valid-base64!!!"})
-        tool = make_code_execution()
+        state, ctx = _fresh_context({"python_repl_session": "!!!not-valid-base64!!!"})
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             tru_result = await tool(code="7", tool_context=ctx)
@@ -279,8 +279,8 @@ class TestErrorHandling:
         monty.__aenter__ = AsyncMock(return_value=pool)
         monty.__aexit__ = AsyncMock(return_value=False)
 
-        state, ctx = _fresh_context({"code_execution_session": bad_encoded})
-        tool = make_code_execution()
+        state, ctx = _fresh_context({"python_repl_session": bad_encoded})
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             with patch(f"{_MODULE}.MontyError", _FakeMontyError):
@@ -301,14 +301,14 @@ class TestSessionSizeCap:
         monty = _make_monty_patch(session)
 
         prior_encoded = base64.b64encode(b"old-dump").decode("ascii")
-        state, ctx = _fresh_context({"code_execution_session": prior_encoded})
-        tool = make_code_execution(max_session_bytes=50)
+        state, ctx = _fresh_context({"python_repl_session": prior_encoded})
+        tool = make_python_repl(max_session_bytes=50)
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             tru_result = await tool(code="x = 1", tool_context=ctx)
 
         # Prior state unchanged — oversized dump not persisted
-        assert state.get("code_execution_session") == prior_encoded
+        assert state.get("python_repl_session") == prior_encoded
         # Model is told the session was not saved
         assert "too large to persist" in tru_result
 
@@ -319,12 +319,12 @@ class TestSessionSizeCap:
         monty = _make_monty_patch(session)
 
         state, ctx = _fresh_context()
-        tool = make_code_execution(max_session_bytes=50)
+        tool = make_python_repl(max_session_bytes=50)
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             tru_result = await tool(code="x = 1", tool_context=ctx)
 
-        tru_stored = state.get("code_execution_session")
+        tru_stored = state.get("python_repl_session")
         assert tru_stored == base64.b64encode(small_dump).decode("ascii")
         assert "too large to persist" not in tru_result
 
@@ -338,7 +338,7 @@ class TestOutputTruncation:
         session = _mock_session()
         monty = _make_monty_patch(session)
         _, ctx = _fresh_context()
-        tool = make_code_execution(max_output_chars=10)
+        tool = make_python_repl(max_output_chars=10)
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             with patch(f"{_MODULE}.CollectStreams") as MockCollectStreams:
@@ -369,7 +369,7 @@ class TestCancellation:
         monty = _make_monty_patch(session)
 
         state, ctx = _fresh_context()
-        tool = make_code_execution()
+        tool = make_python_repl()
 
         async def run_and_cancel():
             coro_task = asyncio.ensure_future(tool(code="...", tool_context=ctx))
@@ -420,7 +420,7 @@ class TestConcurrencyLock:
         monty.__aexit__ = AsyncMock(return_value=False)
 
         state, ctx = _fresh_context()
-        tool = make_code_execution()
+        tool = make_python_repl()
 
         with patch(f"{_MODULE}.AsyncMonty", return_value=monty):
             await asyncio.gather(
@@ -429,7 +429,7 @@ class TestConcurrencyLock:
             )
 
         assert call_order == ["feed:a", "feed:b"] or call_order == ["feed:b", "feed:a"]
-        final = state.get("code_execution_session")
+        final = state.get("python_repl_session")
         assert final in {base64.b64encode(b"dump-a").decode(), base64.b64encode(b"dump-b").decode()}
 
 

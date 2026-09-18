@@ -1,4 +1,4 @@
-"""Code execution tool for running Python in a Monty sandbox.
+"""Python REPL tool for running Python in a Monty sandbox.
 
 This tool is experimental and subject to change in future revisions without notice.
 
@@ -8,21 +8,21 @@ and time. Session state persists across calls via :attr:`~strands.Agent.state`,
 so later code can build on earlier calls; pass ``reset_state=True`` to start
 from an empty namespace.
 
-Requires the optional ``code-execution`` extra
-(``pip install 'strands-agents[code-execution]'``).
+Requires the optional ``python-repl`` extra
+(``pip install 'strands-agents[python-repl]'``).
 
 Example Usage:
     ```python
     from strands import Agent
-    from strands.experimental.tools import code_execution
+    from strands.experimental.tools import python_repl
 
-    agent = Agent(tools=[code_execution])
+    agent = Agent(tools=[python_repl])
     ```
 """
 
-from .code_execution import code_execution, make_code_execution
+from .python_repl import make_python_repl, python_repl
 
 __all__ = [
-    "code_execution",
-    "make_code_execution",
+    "make_python_repl",
+    "python_repl",
 ]
