@@ -18,14 +18,14 @@ def __getattr__(name: str) -> Any:
             stacklevel=2,
         )
         return ToolProvider
-    # code_execution pulls the optional ``code-execution`` extra, so it is lazy-loaded to keep
+    # python_repl pulls the optional ``python-repl`` extra, so it is lazy-loaded to keep
     # the base import free of those dependencies.
-    if name in ("make_code_execution", "code_execution"):
-        from .code_execution import code_execution, make_code_execution
+    if name in ("make_python_repl", "python_repl"):
+        from .python_repl import make_python_repl, python_repl
 
-        if name == "code_execution":
-            return code_execution
-        return make_code_execution
+        if name == "python_repl":
+            return python_repl
+        return make_python_repl
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
