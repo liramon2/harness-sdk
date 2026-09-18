@@ -22,12 +22,20 @@ try:
 except ImportError as error:
     raise ImportError("a2a_client requires the 'a2a' extra. Install with: pip install 'strands-agents[a2a]'") from error
 from ...tools.decorator import tool
-from .types import DEFAULT_A2A_CLIENT_DESCRIPTION, _A2AClientOutput
 
 if TYPE_CHECKING:
     from ...tools.decorator import DecoratedFunctionTool
 
 _DEFAULT_MAX_BYTES = 5 * 1024 * 1024
+
+_A2AClientOutput = dict[str, Any]
+
+DEFAULT_A2A_CLIENT_DESCRIPTION = (
+    "Interacts with remote A2A (Agent-to-Agent) protocol agents. "
+    "Use operation='discover' to fetch an agent card from an endpoint. "
+    "Use operation='send_message' to send a message and receive a response. "
+    "Only the listed endpoints are permitted."
+)
 
 
 class A2AClientError(RuntimeError):

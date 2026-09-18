@@ -11,7 +11,7 @@ Example Usage:
     import httpx
     from a2a.client import ClientConfig
     from strands import Agent
-    from strands.vended_tools.a2a_client import make_a2a_client
+    from strands.vended_tools import make_a2a_client
 
     tool = make_a2a_client(
         allowed_endpoints={
