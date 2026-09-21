@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from strands.agent.state import AgentState
-from strands.experimental.tools.python_repl.python_repl import (
+from strands.experimental.tools._python_repl.python_repl import (
     PythonReplError,
     _build_error_message,
     _truncate,
@@ -20,7 +20,7 @@ from strands.types.tools import ToolContext
 
 # importlib.import_module bypasses the package attribute collision: the python_repl
 # package exports a `python_repl` name that shadows the submodule on attribute lookup.
-_python_repl_module = importlib.import_module("strands.experimental.tools.python_repl.python_repl")
+_python_repl_module = importlib.import_module("strands.experimental.tools._python_repl.python_repl")
 
 
 def _fresh_context(initial_state: dict | None = None) -> tuple[AgentState, ToolContext]:
