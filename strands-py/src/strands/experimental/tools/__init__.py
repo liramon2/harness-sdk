@@ -21,6 +21,7 @@ def __getattr__(name: str) -> Any:
     # python_repl pulls the optional ``python-repl`` extra, so it is lazy-loaded to keep
     # the base import free of those dependencies.
     if name in ("make_python_repl", "python_repl"):
+        # python_repl is prefixed with '_' to avoid name collision with its exported tool.
         from ._python_repl import make_python_repl, python_repl
 
         if name == "python_repl":

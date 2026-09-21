@@ -22,7 +22,7 @@ sourceLinks:
   - path: strands-py/src/strands/vended_tools/web_fetch/web_fetch.py
   - path: strands-py/src/strands/vended_tools/a2a_client/a2a_client.py
   - path: strands-py/src/strands/experimental/tools/stop/stop.py
-  - path: strands-py/src/strands/experimental/tools/python_repl/python_repl.py
+  - path: strands-py/src/strands/experimental/tools/_python_repl/_python_repl.py
 ---
 
 Vended tools are pre-built tools included directly in the Strands Harness SDK for common agent tasks like file operations, shell commands, HTTP requests, and persistent notes.
@@ -704,6 +704,7 @@ Monty is a language-level sandbox, not an OS-level one. The bytecode has no
 host operations, so untrusted code cannot reach the filesystem, network, or
 environment. For an OS boundary around the tools the code calls, run the agent
 in a [sandboxed environment](../sandbox/index.mdx).
+:::
 
 ```python
 from strands import Agent

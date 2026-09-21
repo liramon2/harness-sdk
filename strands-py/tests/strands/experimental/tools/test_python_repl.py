@@ -1,8 +1,11 @@
-"""Tests for the python_repl tool."""
+"""Tests for the python_repl tool — consumer-level concerns only.
+
+run_session, cancellation, state-restore fallback, and build_error_message
+are tested in test_monty.py.
+"""
 
 import asyncio
 import base64
-import importlib
 import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,17 +13,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from strands.agent.state import AgentState
-from strands.experimental.tools._python_repl.python_repl import (
+from strands.experimental.tools import _monty as _monty_module
+from strands.experimental.tools._python_repl import _python_repl as _python_repl_module
+from strands.experimental.tools._python_repl._python_repl import (
     PythonReplError,
-    _build_error_message,
-    _truncate,
     make_python_repl,
 )
 from strands.types.tools import ToolContext
 
-# importlib.import_module bypasses the package attribute collision: the python_repl
-# package exports a `python_repl` name that shadows the submodule on attribute lookup.
-_python_repl_module = importlib.import_module("strands.experimental.tools._python_repl.python_repl")
+from .conftest import FakeMontyError, make_monty_patch, mock_session
 
 
 def _fresh_context(initial_state: dict | None = None) -> tuple[AgentState, ToolContext]:
@@ -37,44 +38,6 @@ def _fresh_context(initial_state: dict | None = None) -> tuple[AgentState, ToolC
         invocation_state={},
     )
     return state, ctx
-
-
-class _FakeMontyError(Exception):
-    """Stand-in for a Monty error in tests.
-
-    The real MontyError/MontyRuntimeError are Rust-backed types that cannot be
-    instantiated directly in Python. Tests that need to raise or catch a MontyError
-    patch the module-level ``MontyError`` name with this class.
-    """
-
-    def display(self) -> str:
-        return str(self.args[0]) if self.args else ""
-
-
-def _mock_session(value: object = None, dump: bytes = b"session-dump") -> MagicMock:
-    session = MagicMock()
-    session.feed_run = AsyncMock(return_value=value)
-    session.dump = AsyncMock(return_value=dump)
-    session.load_session = AsyncMock()
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=False)
-    return session
-
-
-def _mock_pool(session: MagicMock) -> MagicMock:
-    pool = MagicMock()
-    pool.checkout = MagicMock(return_value=session)
-    pool.__aenter__ = AsyncMock(return_value=pool)
-    pool.__aexit__ = AsyncMock(return_value=False)
-    return pool
-
-
-def _make_monty_patch(session: MagicMock) -> MagicMock:
-    pool = _mock_pool(session)
-    monty = MagicMock()
-    monty.__aenter__ = AsyncMock(return_value=pool)
-    monty.__aexit__ = AsyncMock(return_value=False)
-    return monty
 
 
 class TestMakePythonRepl:
@@ -113,18 +76,33 @@ class TestMakePythonRepl:
         assert any("timeout_secs (10.0) is less than max_duration_secs (30.0)" in r.message for r in caplog.records)
 
 
-class TestExecution:
+class TestStatePersistence:
     @pytest.mark.asyncio
-    async def test_returns_empty_output(self):
-        session = _mock_session(value=42)
-        monty = _make_monty_patch(session)
-        _, ctx = _fresh_context()
+    async def test_persists_session_to_state(self):
+        session = mock_session(dump=b"new-dump")
+        monty = make_monty_patch(session)
+        state, ctx = _fresh_context()
         tool = make_python_repl()
 
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            tru_result = await tool(code="42", tool_context=ctx)
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
+            await tool(code="x = 1", tool_context=ctx)
 
-        assert tru_result == "(no output)"
+        exp_stored = base64.b64encode(b"new-dump").decode("ascii")
+        assert state.get("python_repl_session") == exp_stored
+
+    @pytest.mark.asyncio
+    async def test_restores_prior_state(self):
+        prior_dump = b"prior-dump"
+        prior_encoded = base64.b64encode(prior_dump).decode("ascii")
+        session = mock_session()
+        monty = make_monty_patch(session)
+        state, ctx = _fresh_context({"python_repl_session": prior_encoded})
+        tool = make_python_repl()
+
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
+            await tool(code="x", tool_context=ctx)
+
+        session.load_session.assert_awaited_once_with(prior_dump)
 
     @pytest.mark.asyncio
     async def test_second_call_sees_first_calls_state(self):
@@ -137,44 +115,14 @@ class TestExecution:
         assert "43" in result
 
     @pytest.mark.asyncio
-    async def test_persists_session_to_state(self):
-        session = _mock_session(dump=b"new-dump")
-        monty = _make_monty_patch(session)
-        state, ctx = _fresh_context()
-        tool = make_python_repl()
-
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            await tool(code="x = 1", tool_context=ctx)
-
-        tru_stored = state.get("python_repl_session")
-        exp_stored = base64.b64encode(b"new-dump").decode("ascii")
-        assert tru_stored == exp_stored
-
-    @pytest.mark.asyncio
-    async def test_restores_prior_state(self):
-        prior_dump = b"prior-dump"
-        prior_encoded = base64.b64encode(prior_dump).decode("ascii")
-        session = _mock_session()
-        monty = _make_monty_patch(session)
-        state, ctx = _fresh_context({"python_repl_session": prior_encoded})
-        tool = make_python_repl()
-
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            await tool(code="x", tool_context=ctx)
-
-        session.load_session.assert_awaited_once_with(prior_dump)
-
-
-class TestResetState:
-    @pytest.mark.asyncio
     async def test_reset_clears_state_before_run(self):
         prior_encoded = base64.b64encode(b"stale").decode("ascii")
-        session = _mock_session()
-        monty = _make_monty_patch(session)
+        session = mock_session()
+        monty = make_monty_patch(session)
         state, ctx = _fresh_context({"python_repl_session": prior_encoded})
         tool = make_python_repl()
 
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
             await tool(code="x = 1", tool_context=ctx, reset_state=True)
 
         session.load_session.assert_not_awaited()
@@ -184,43 +132,25 @@ class TestResetState:
         prior_encoded = base64.b64encode(b"stale").decode("ascii")
 
         session = MagicMock()
-        session.feed_run = AsyncMock(side_effect=_FakeMontyError("boom"))
+        session.feed_run = AsyncMock(side_effect=FakeMontyError("boom"))
         session.dump = AsyncMock(return_value=b"")
         session.load_session = AsyncMock()
         session.__aenter__ = AsyncMock(return_value=session)
         session.__aexit__ = AsyncMock(return_value=False)
-        monty = _make_monty_patch(session)
+        monty = make_monty_patch(session)
 
         state, ctx = _fresh_context({"python_repl_session": prior_encoded})
         tool = make_python_repl()
 
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            with patch.object(_python_repl_module, "MontyError", _FakeMontyError):
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
+            with patch.object(_python_repl_module, "MontyError", FakeMontyError):
                 with pytest.raises(PythonReplError):
                     await tool(code="raise ValueError()", tool_context=ctx, reset_state=True)
 
         assert state.get("python_repl_session") is None
 
 
-class TestErrorHandling:
-    @pytest.mark.asyncio
-    async def test_monty_error_becomes_python_repl_error(self):
-        session = MagicMock()
-        session.feed_run = AsyncMock(side_effect=_FakeMontyError("name 'x' is not defined"))
-        session.dump = AsyncMock(return_value=b"")
-        session.load_session = AsyncMock()
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=False)
-        monty = _make_monty_patch(session)
-
-        _, ctx = _fresh_context()
-        tool = make_python_repl()
-
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            with patch.object(_python_repl_module, "MontyError", _FakeMontyError):
-                with pytest.raises(PythonReplError):
-                    await tool(code="x", tool_context=ctx)
-
+class TestBase64ErrorHandling:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "bad_state",
@@ -228,88 +158,88 @@ class TestErrorHandling:
         ids=["TypeError", "binascii.Error"],
     )
     async def test_malformed_state_discards_and_runs_fresh(self, bad_state):
-        session = _mock_session()
-        monty = _make_monty_patch(session)
+        session = mock_session()
+        monty = make_monty_patch(session)
         state, ctx = _fresh_context({"python_repl_session": bad_state})
         tool = make_python_repl()
 
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
             tru_result = await tool(code="x = 1", tool_context=ctx)
 
         assert tru_result == "(no output)"
         session.load_session.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_unrestorable_dump_falls_back_to_fresh_session(self):
-        tool = make_python_repl()
-        state, ctx = _fresh_context({"python_repl_session": "!!!corrupt-base64!!!"})
 
-        # Corrupt base64 → fresh session → code runs fine
-        result = await tool(code="x = 42", tool_context=ctx)
-        assert result == "(no output)"
-        assert state.get("python_repl_session") is not None  # fresh dump persisted
+class TestMontyErrorWrapping:
+    @pytest.mark.asyncio
+    async def test_monty_error_becomes_python_repl_error(self):
+        session = MagicMock()
+        session.feed_run = AsyncMock(side_effect=FakeMontyError("name 'x' is not defined"))
+        session.dump = AsyncMock(return_value=b"")
+        session.load_session = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        monty = make_monty_patch(session)
+
+        _, ctx = _fresh_context()
+        tool = make_python_repl()
+
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
+            with patch.object(_python_repl_module, "MontyError", FakeMontyError):
+                with pytest.raises(PythonReplError):
+                    await tool(code="x", tool_context=ctx)
 
     @pytest.mark.asyncio
     async def test_runtime_error_is_not_retried_on_fresh_session(self):
         tool = make_python_repl()
         _, ctx = _fresh_context()
 
-        # First call: define `data` in session
         await tool(code="data = [1, 2, 3]", tool_context=ctx)
 
-        # Second call: IndexError from user code — must raise, not fall back to fresh session
         with pytest.raises(PythonReplError, match="IndexError"):
             await tool(code="data[10]", tool_context=ctx)
 
 
 class TestSessionSizeCap:
     @pytest.mark.asyncio
-    async def test_size_check_applies_to_base64_not_raw_bytes(self):
+    async def test_oversized_dump_is_discarded(self):
         raw_dump = b"x" * 30
-        encoded_len = len(base64.b64encode(raw_dump))
-        # base64 is larger than raw
-        assert encoded_len > 30
-
-        session = _mock_session(dump=raw_dump)
-        monty = _make_monty_patch(session)
+        session = mock_session(dump=raw_dump)
+        monty = make_monty_patch(session)
         prior_encoded = base64.b64encode(b"old").decode("ascii")
         state, ctx = _fresh_context({"python_repl_session": prior_encoded})
-        # Between raw (30) and encoded (40)
         tool = make_python_repl(max_session_bytes=35)
 
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
             tru_result = await tool(code="x = 1", tool_context=ctx)
 
-        # Should be discarded because encoded size (40) > limit (35)
+        # base64 of 30 bytes is 40 chars, exceeds 35-byte limit.
         assert state.get("python_repl_session") == prior_encoded
         assert "too large to persist" in tru_result
 
     @pytest.mark.asyncio
-    async def test_persists_dump_within_limit(self):
+    async def test_small_dump_is_persisted(self):
         small_dump = b"x" * 10
-        session = _mock_session(dump=small_dump)
-        monty = _make_monty_patch(session)
-
+        session = mock_session(dump=small_dump)
+        monty = make_monty_patch(session)
         state, ctx = _fresh_context()
         tool = make_python_repl(max_session_bytes=50)
 
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            tru_result = await tool(code="x = 1", tool_context=ctx)
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
+            await tool(code="x = 1", tool_context=ctx)
 
-        tru_stored = state.get("python_repl_session")
-        assert tru_stored == base64.b64encode(small_dump).decode("ascii")
-        assert "too large to persist" not in tru_result
+        assert state.get("python_repl_session") == base64.b64encode(small_dump).decode("ascii")
 
 
 class TestOutputTruncation:
     @pytest.mark.asyncio
     async def test_truncates_long_output(self):
-        session = _mock_session()
-        monty = _make_monty_patch(session)
+        session = mock_session()
+        monty = make_monty_patch(session)
         _, ctx = _fresh_context()
         tool = make_python_repl(max_output_chars=10)
 
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
             with patch.object(_python_repl_module, "CollectStreams") as MockCollectStreams:
                 mock_collector = MagicMock()
                 mock_collector.output = [("stdout", "a" * 200)]
@@ -318,34 +248,6 @@ class TestOutputTruncation:
 
         assert tru_result.endswith("[output truncated]")
         assert len(tru_result) < 200
-
-
-class TestCancellation:
-    @pytest.mark.asyncio
-    async def test_cancel_signal_aborts_run(self):
-        run_started = asyncio.Event()
-
-        async def slow_feed_run(code, *, print_callback=None):
-            run_started.set()
-            await asyncio.sleep(10)
-            return None
-
-        session = _mock_session()
-        session.feed_run = slow_feed_run
-        monty = _make_monty_patch(session)
-
-        state, ctx = _fresh_context()
-        tool = make_python_repl()
-
-        async def run_and_cancel():
-            coro_task = asyncio.ensure_future(tool(code="...", tool_context=ctx))
-            await run_started.wait()
-            ctx.cancel_signal.set()
-            return await coro_task
-
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            with pytest.raises(asyncio.CancelledError):
-                await run_and_cancel()
 
 
 class TestConcurrencyLock:
@@ -386,49 +288,46 @@ class TestConcurrencyLock:
         state, ctx = _fresh_context()
         tool = make_python_repl()
 
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
+        with patch.object(_monty_module, "AsyncMonty", return_value=monty):
             await asyncio.gather(
                 tool(code="a", tool_context=ctx),
                 tool(code="b", tool_context=ctx),
             )
 
         assert len(intervals) == 2
-        # Serialised: one interval must finish before the other starts
         (s1, e1), (s2, e2) = intervals
         assert e1 <= s2 or e2 <= s1, f"Intervals overlapped: {intervals}"
 
 
-class TestBuildErrorMessage:
-    def test_message_and_stdout_appended_on_failure(self):
-        error = _FakeMontyError("x is not defined")
-        tru_message = _build_error_message(error, [("stdout", "before\n")], max_output_chars=1000)
-        assert "x is not defined" in tru_message
-        assert "before\n" in tru_message
-        assert "stdout before failure" in tru_message
+class TestPublicImport:
+    def test_python_repl_import_is_tool_not_module(self):
+        import sys
+        import types
 
-    def test_no_stdout_section_when_output_empty(self):
-        error = _FakeMontyError("boom")
-        tru_message = _build_error_message(error, [], max_output_chars=1000)
-        assert "boom" in tru_message
-        assert "stdout" not in tru_message
+        key = "strands.experimental.tools"
+        saved = sys.modules.pop(key, None)
+        try:
+            from strands.experimental.tools import python_repl as pr
 
-    def test_stdout_truncated_in_error_message(self):
-        error = _FakeMontyError("kaboom")
-        big_output = [("stdout", "a" * 200)]
-        tru_message = _build_error_message(error, big_output, max_output_chars=10)
-        assert "kaboom" in tru_message
-        assert "[output truncated]" in tru_message
-        assert "a" * 200 not in tru_message
+            assert not isinstance(pr, types.ModuleType), (
+                f"python_repl resolved to module {pr!r}; expected DecoratedFunctionTool"
+            )
+            assert callable(pr)
+        finally:
+            if saved is not None:
+                sys.modules[key] = saved
 
+    def test_make_python_repl_import_is_function(self):
+        import sys
+        import types
 
-class TestTruncate:
-    def test_returns_text_at_exact_limit_unchanged(self):
-        assert _truncate("12345", 5) == "12345"
+        key = "strands.experimental.tools"
+        saved = sys.modules.pop(key, None)
+        try:
+            from strands.experimental.tools import make_python_repl as mpr
 
-    def test_truncates_and_appends_marker(self):
-        result = _truncate("abcdefghij", 5)
-        assert result.startswith("abcde")
-        assert result.endswith("[output truncated]")
-
-    def test_empty_string(self):
-        assert _truncate("", 10) == ""
+            assert not isinstance(mpr, types.ModuleType)
+            assert callable(mpr)
+        finally:
+            if saved is not None:
+                sys.modules[key] = saved

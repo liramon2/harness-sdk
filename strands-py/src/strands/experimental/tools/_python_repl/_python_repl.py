@@ -2,11 +2,7 @@
 
 This tool is experimental and subject to change in future revisions without notice.
 
-Provides :func:`make_python_repl` and the default :data:`python_repl`
-instance. Each call runs a snippet inside a `Monty <https://pydantic.dev/docs/monty/>`_
-worker subprocess with no filesystem, network, or environment access, bounded
-by memory and time limits.
-
+Provides :func:`make_python_repl` and the default :data:`python_repl` instance.
 Session state (variables, imports, and definitions) persists across calls via
 :attr:`~strands.Agent.state`. Pass ``reset_state=True`` to start fresh.
 
@@ -19,31 +15,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import contextlib
 import logging
-import threading
 import weakref
-from collections.abc import Awaitable
-from typing import TYPE_CHECKING, Any, Literal
-
-try:
-    from pydantic_monty import (
-        AsyncMonty,
-        CollectStreams,
-        MontyError,
-        MontyRuntimeError,
-        MontySyntaxError,
-        MontyTypingError,
-        ResourceLimits,
-    )
-except ImportError as error:
-    raise ImportError(
-        "python_repl requires the 'python-repl' extra (pydantic-monty). "
-        "Install with: pip install 'strands-agents[python-repl]'"
-    ) from error
+from typing import TYPE_CHECKING
 
 from ....tools.decorator import tool
 from ....types.tools import ToolContext
+from .._monty import (
+    CollectStreams,
+    MontyError,
+    ResourceLimits,
+    build_error_message,
+    run_session,
+)
 
 if TYPE_CHECKING:
     from ....agent.agent import Agent
@@ -66,8 +50,6 @@ class PythonReplError(RuntimeError):
     """Raised when Python REPL execution fails."""
 
 
-_ERRORS_WITH_DISPLAY = (MontyRuntimeError, MontySyntaxError, MontyTypingError)
-_CANCEL_POLL_INTERVAL = 0.05
 _DEFAULT_MAX_DURATION_SECS = 30.0
 _DEFAULT_MAX_MEMORY_BYTES = 1024 * 1024 * 100  # 100 MiB
 _DEFAULT_TIMEOUT_SECS = 60.0
@@ -153,23 +135,40 @@ def make_python_repl(
         async with _get_lock(_state_locks, agent):
             if reset_state:
                 agent.state.set(_STATE_KEY, None)
-            old_state = agent.state.get(_STATE_KEY)
+
+            # Decode persisted base64 state into raw bytes for the sandbox.
+            old_state_bytes: bytes | None = None
+            old_state_str = agent.state.get(_STATE_KEY)
+            if old_state_str is not None:
+                try:
+                    old_state_bytes = base64.b64decode(old_state_str)
+                except (binascii.Error, TypeError) as error:
+                    logger.warning("error=<%s> | discarding corrupt session state", error)
 
             collector = CollectStreams()
 
             try:
-                new_state = await _await_bounded(
-                    _run_session(code, old_state, collector, limits, timeout_secs),
-                    tool_context.cancel_signal,
+                new_state = await run_session(
+                    code,
+                    state=old_state_bytes,
+                    cancel_signal=tool_context.cancel_signal,
+                    monty_kwargs={"request_timeout": timeout_secs},
+                    checkout_kwargs={"limits": limits},
+                    feed_kwargs={"print_callback": collector},
                 )
             except MontyError as error:
-                raise PythonReplError(_build_error_message(error, collector.output, max_output_chars)) from error
+                raise PythonReplError(build_error_message(error, collector.output, max_output_chars)) from error
+            except asyncio.TimeoutError:
+                raise PythonReplError(f"Execution timed out after {timeout_secs}s") from None
 
-            # Get the truncated interpreter output
+            # Get the interpreter output, truncated to the configured limit.
             raw_output = "".join(text for _, text in collector.output)
-            output = _truncate(raw_output, max_output_chars)
+            if len(raw_output) > max_output_chars:
+                output = raw_output[:max_output_chars] + "\n\n[output truncated]"
+            else:
+                output = raw_output
 
-            # Convert the state to base64, making it JSON serializable like the rest of agent state.
+            # Encode the new state as base64 for JSON-safe persistence in agent state.
             encoded_state = base64.b64encode(new_state).decode("ascii")
 
             if len(encoded_state) <= max_session_bytes:
@@ -206,79 +205,3 @@ def _get_lock(
     if entry is None or entry[0] is not loop:
         locks[agent] = (loop, asyncio.Lock())
     return locks[agent][1]
-
-
-async def _await_bounded(coro: Awaitable[Any], cancel_signal: threading.Event) -> Any:
-    """Await ``coro`` until it finishes or ``cancel_signal`` fires.
-
-    On cancellation the coroutine is cancelled before raising ``asyncio.CancelledError``.
-    """
-    task = asyncio.ensure_future(coro)
-    watch = asyncio.ensure_future(_poll_cancel(cancel_signal))
-    try:
-        done, _ = await asyncio.wait({task, watch}, return_when=asyncio.FIRST_COMPLETED)
-        if task in done:
-            return task.result()
-        # Cancel signal fired. Drain the task before raising so it doesn't leak
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        raise asyncio.CancelledError
-    finally:
-        # Drain any task that didn't finish naturally
-        for pending in (task, watch):
-            if not pending.done():
-                pending.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await pending
-
-
-async def _poll_cancel(cancel_signal: threading.Event) -> None:
-    """Return when the cancel signal is set."""
-    while not cancel_signal.is_set():
-        await asyncio.sleep(_CANCEL_POLL_INTERVAL)
-
-
-async def _run_session(
-    code: str,
-    old_state: str | None,
-    collector: CollectStreams,
-    limits: ResourceLimits,
-    timeout_secs: float,
-) -> bytes:
-    """Execute code in a Monty sandbox and return the new state."""
-    async with AsyncMonty(request_timeout=timeout_secs) as pool:
-        # Load the state and run a session
-        if old_state is not None:
-            async with pool.checkout(limits=limits) as session:
-                try:
-                    await session.load_session(base64.b64decode(old_state))
-                except (MontyError, binascii.Error, TypeError) as error:
-                    logger.warning("error=<%s> | discarding unrestorable python_repl interpreter state", error)
-                else:
-                    await session.feed_run(code, print_callback=collector)
-                    return await session.dump()
-
-        # No prior state or restore failed — run in a fresh empty session
-        async with pool.checkout(limits=limits) as session:
-            await session.feed_run(code, print_callback=collector)
-            return await session.dump()
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    """Return text truncated to max_chars with a trailing marker when clipped."""
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + "\n\n[output truncated]"
-
-
-def _build_error_message(
-    error: Exception, output: list[tuple[Literal["stdout", "stderr"], str]], max_output_chars: int
-) -> str:
-    """Build an error message from a MontyError and any captured stdout."""
-    message = str(error.display()) if isinstance(error, _ERRORS_WITH_DISPLAY) else str(error)
-    sections = [message]
-    stdout = "".join(text for _, text in output)
-    if stdout:
-        sections.append(f"--- stdout before failure ---\n{_truncate(stdout, max_output_chars)}")
-    return "\n\n".join(sections)
