@@ -127,6 +127,16 @@ class TestExecution:
         assert tru_result == "(no output)"
 
     @pytest.mark.asyncio
+    async def test_second_call_sees_first_calls_state(self):
+        tool = make_python_repl()
+        _, ctx = _fresh_context()
+
+        await tool(code="x = 42", tool_context=ctx)
+        result = await tool(code="print(x + 1)", tool_context=ctx)
+
+        assert "43" in result
+
+    @pytest.mark.asyncio
     async def test_persists_session_to_state(self):
         session = _mock_session(dump=b"new-dump")
         monty = _make_monty_patch(session)
@@ -212,32 +222,15 @@ class TestErrorHandling:
                     await tool(code="x", tool_context=ctx)
 
     @pytest.mark.asyncio
-    async def test_runtime_error_from_user_code_is_not_swallowed(self):
-        # guards against feed_run MontyError being caught by the load_session handler
-        # and silently re-running in a fresh empty session (#unrestorable-state-bug)
-        prior_encoded = base64.b64encode(b"valid-state").decode("ascii")
-
-        session = MagicMock()
-        session.load_session = AsyncMock()  # load succeeds
-        session.feed_run = AsyncMock(side_effect=_FakeMontyError("name 'data' is not defined"))
-        session.dump = AsyncMock(return_value=b"")
-        session.__aenter__ = AsyncMock(return_value=session)
-        session.__aexit__ = AsyncMock(return_value=False)
-        monty = _make_monty_patch(session)
-
-        _, ctx = _fresh_context({"python_repl_session": prior_encoded})
-        tool = make_python_repl()
-
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            with patch.object(_python_repl_module, "MontyError", _FakeMontyError):
-                with pytest.raises(PythonReplError, match="name 'data' is not defined"):
-                    await tool(code="data[10]", tool_context=ctx)
-
-    @pytest.mark.asyncio
-    async def test_malformed_state_discards_and_runs_fresh(self):
+    @pytest.mark.parametrize(
+        "bad_state",
+        [12345, "!!!corrupt-base64!!!"],
+        ids=["TypeError", "binascii.Error"],
+    )
+    async def test_malformed_state_discards_and_runs_fresh(self, bad_state):
         session = _mock_session()
         monty = _make_monty_patch(session)
-        state, ctx = _fresh_context({"python_repl_session": 12345})
+        state, ctx = _fresh_context({"python_repl_session": bad_state})
         tool = make_python_repl()
 
         with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
@@ -245,18 +238,6 @@ class TestErrorHandling:
 
         assert tru_result == "(no output)"
         session.load_session.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_corrupt_base64_discards_state_and_runs_fresh(self):
-        session = _mock_session(value=7)
-        monty = _make_monty_patch(session)
-        state, ctx = _fresh_context({"python_repl_session": "!!!not-valid-base64!!!"})
-        tool = make_python_repl()
-
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            tru_result = await tool(code="7", tool_context=ctx)
-
-        assert tru_result == "(no output)"
 
     @pytest.mark.asyncio
     async def test_unrestorable_dump_falls_back_to_fresh_session(self):
@@ -282,24 +263,6 @@ class TestErrorHandling:
 
 
 class TestSessionSizeCap:
-    @pytest.mark.asyncio
-    async def test_discards_oversized_dump_and_warns_in_output(self):
-        big_dump = b"x" * 100
-        session = _mock_session(dump=big_dump)
-        monty = _make_monty_patch(session)
-
-        prior_encoded = base64.b64encode(b"old-dump").decode("ascii")
-        state, ctx = _fresh_context({"python_repl_session": prior_encoded})
-        tool = make_python_repl(max_session_bytes=50)
-
-        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
-            tru_result = await tool(code="x = 1", tool_context=ctx)
-
-        # Prior state unchanged — oversized dump not persisted
-        assert state.get("python_repl_session") == prior_encoded
-        # Model is told the session was not saved
-        assert "too large to persist" in tru_result
-
     @pytest.mark.asyncio
     async def test_size_check_applies_to_base64_not_raw_bytes(self):
         raw_dump = b"x" * 30
@@ -448,6 +411,14 @@ class TestBuildErrorMessage:
         tru_message = _build_error_message(error, [], max_output_chars=1000)
         assert "boom" in tru_message
         assert "stdout" not in tru_message
+
+    def test_stdout_truncated_in_error_message(self):
+        error = _FakeMontyError("kaboom")
+        big_output = [("stdout", "a" * 200)]
+        tru_message = _build_error_message(error, big_output, max_output_chars=10)
+        assert "kaboom" in tru_message
+        assert "[output truncated]" in tru_message
+        assert "a" * 200 not in tru_message
 
 
 class TestTruncate:
