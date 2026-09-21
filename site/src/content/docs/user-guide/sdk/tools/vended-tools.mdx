@@ -721,10 +721,10 @@ from strands.experimental.tools import make_python_repl
 
 python_repl = make_python_repl(
     max_duration_secs=10.0,
-    max_memory=64 * 1024 * 1024,
+    max_memory_bytes=64 * 1024 * 1024,
     max_output_chars=10_000,
     max_session_bytes=5 * 1024 * 1024,
-    timeout=30.0,
+    timeout_secs=30.0,
 )
 agent = Agent(tools=[python_repl])
 ```

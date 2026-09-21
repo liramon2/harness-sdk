@@ -46,6 +46,7 @@ from ....tools.decorator import tool
 from ....types.tools import ToolContext
 
 if TYPE_CHECKING:
+    from ....agent.agent import Agent
     from ....tools.decorator import DecoratedFunctionTool
 
 logger = logging.getLogger(__name__)
@@ -79,10 +80,10 @@ def make_python_repl(
     name: str = "python_repl",
     description: str = PYTHON_REPL_DESCRIPTION,
     max_duration_secs: float = _DEFAULT_MAX_DURATION_SECS,
-    max_memory: int = _DEFAULT_MAX_MEMORY_BYTES,
+    max_memory_bytes: int = _DEFAULT_MAX_MEMORY_BYTES,
     max_output_chars: int = _DEFAULT_MAX_OUTPUT_CHARS,
     max_session_bytes: int = _DEFAULT_MAX_SESSION_BYTES,
-    timeout: float = _DEFAULT_TIMEOUT_SECS,
+    timeout_secs: float = _DEFAULT_TIMEOUT_SECS,
 ) -> DecoratedFunctionTool:
     """Create a Python REPL tool backed by a Monty sandbox.
 
@@ -90,13 +91,13 @@ def make_python_repl(
         name: Tool name exposed to the model.
         description: Tool description shown to the model.
         max_duration_secs: Maximum execution time per call in seconds, enforced inside the sandbox. Defaults to 30.
-        max_memory: Maximum heap memory the sandbox may allocate, in bytes. Defaults to 100 MiB.
+        max_memory_bytes: Maximum heap memory the sandbox may allocate, in bytes. Defaults to 100 MiB.
         max_output_chars: Maximum characters returned for output.
             Longer values are truncated. Defaults to 50,000.
-        max_session_bytes: Maximum size of the raw session dump in bytes. Dumps exceeding this limit are
-            not persisted; the previous session is kept and the next call resumes from that earlier state.
-            Defaults to 10 MiB.
-        timeout: Host-side deadline in seconds; kills the worker if exceeded. Backstops
+        max_session_bytes: Maximum size of the base64-encoded session state in bytes. Dumps exceeding this
+            limit are not persisted; the previous session is kept and the next call resumes from that earlier
+            state. Defaults to 10 MiB.
+        timeout_secs: Host-side deadline in seconds; kills the worker if exceeded. Backstops
             ``max_duration_secs``. Defaults to 60.
 
     Returns:
@@ -110,16 +111,23 @@ def make_python_repl(
         raise ValueError("name must be a non-empty string")
     if not isinstance(max_duration_secs, (int, float)) or max_duration_secs <= 0:
         raise ValueError(f"max_duration_secs must be a positive number, got {max_duration_secs}")
-    if not isinstance(max_memory, int) or max_memory < 1:
-        raise ValueError("max_memory must be a positive integer")
+    if not isinstance(max_memory_bytes, int) or max_memory_bytes < 1:
+        raise ValueError("max_memory_bytes must be a positive integer")
     if not isinstance(max_output_chars, int) or max_output_chars < 1:
         raise ValueError("max_output_chars must be a positive integer")
     if not isinstance(max_session_bytes, int) or max_session_bytes < 1:
         raise ValueError("max_session_bytes must be a positive integer")
-    if not isinstance(timeout, (int, float)) or timeout <= 0:
-        raise ValueError(f"timeout must be a positive number, got {timeout}")
+    if not isinstance(timeout_secs, (int, float)) or timeout_secs <= 0:
+        raise ValueError(f"timeout_secs must be a positive number, got {timeout_secs}")
+    if timeout_secs < max_duration_secs:
+        logger.warning(
+            "timeout_secs (%s) is less than max_duration_secs (%s); "
+            "the host will kill the worker before the sandbox enforcer can act",
+            timeout_secs,
+            max_duration_secs,
+        )
 
-    _state_locks: weakref.WeakKeyDictionary[Any, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = (
+    _state_locks: weakref.WeakKeyDictionary[Agent, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = (
         weakref.WeakKeyDictionary()
     )
 
@@ -139,7 +147,7 @@ def make_python_repl(
             tool_context: Injected by the framework. Not user-facing.
             reset_state: When ``True``, discard any persisted session before executing. Defaults to ``False``.
         """
-        limits = ResourceLimits(max_duration_secs=max_duration_secs, max_memory=max_memory)
+        limits = ResourceLimits(max_duration_secs=max_duration_secs, max_memory=max_memory_bytes)
         agent = tool_context.agent
 
         async with _get_lock(_state_locks, agent):
@@ -151,24 +159,25 @@ def make_python_repl(
 
             try:
                 new_state = await _await_bounded(
-                    _run_session(code, old_state, collector, limits, timeout),
+                    _run_session(code, old_state, collector, limits, timeout_secs),
                     tool_context.cancel_signal,
                 )
             except MontyError as error:
                 raise PythonReplError(_build_error_message(error, collector.output, max_output_chars)) from error
 
             # Get the truncated interpreter output
-            output = "".join(text for _, text in collector.output)
-            if len(output) > max_output_chars:
-                output = output[:max_output_chars] + "\n\n[output truncated]"
+            raw_output = "".join(text for _, text in collector.output)
+            output = _truncate(raw_output, max_output_chars)
 
-            if len(new_state) <= max_session_bytes:
-                # Convert the state to base64, making it JSON serializable like the rest of agent state
-                agent.state.set(_STATE_KEY, base64.b64encode(new_state).decode("ascii"))
+            # Convert the state to base64, making it JSON serializable like the rest of agent state.
+            encoded_state = base64.b64encode(new_state).decode("ascii")
+
+            if len(encoded_state) <= max_session_bytes:
+                agent.state.set(_STATE_KEY, encoded_state)
             else:
                 logger.warning(
-                    "session_bytes=<%d>, max_session_bytes=<%d> | session dump exceeds limit, discarding",
-                    len(new_state),
+                    "encoded_session_bytes=<%d>, max_session_bytes=<%d> | session dump exceeds limit, discarding",
+                    len(encoded_state),
                     max_session_bytes,
                 )
                 output += "\n[warning: session state was too large to persist; this call's variables are not saved]"
@@ -186,7 +195,7 @@ python_repl = make_python_repl()
 
 
 def _get_lock(
-    locks: weakref.WeakKeyDictionary[Any, tuple[asyncio.AbstractEventLoop, asyncio.Lock]], agent: Any
+    locks: weakref.WeakKeyDictionary[Agent, tuple[asyncio.AbstractEventLoop, asyncio.Lock]], agent: Agent
 ) -> asyncio.Lock:
     """Return the agent's write lock for the running event loop, creating a fresh one per loop.
 
@@ -234,11 +243,11 @@ async def _run_session(
     code: str,
     old_state: str | None,
     collector: CollectStreams,
-    limits: Any,
-    timeout: float,
+    limits: ResourceLimits,
+    timeout_secs: float,
 ) -> bytes:
     """Execute code in a Monty sandbox and return the new state."""
-    async with AsyncMonty(request_timeout=timeout) as pool:
+    async with AsyncMonty(request_timeout=timeout_secs) as pool:
         # Load the state and run a session
         if old_state is not None:
             async with pool.checkout(limits=limits) as session:
@@ -256,6 +265,13 @@ async def _run_session(
             return await session.dump()
 
 
+def _truncate(text: str, max_chars: int) -> str:
+    """Return text truncated to max_chars with a trailing marker when clipped."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n\n[output truncated]"
+
+
 def _build_error_message(
     error: Exception, output: list[tuple[Literal["stdout", "stderr"], str]], max_output_chars: int
 ) -> str:
@@ -264,7 +280,5 @@ def _build_error_message(
     sections = [message]
     stdout = "".join(text for _, text in output)
     if stdout:
-        if len(stdout) > max_output_chars:
-            stdout = stdout[:max_output_chars] + "\n\n[output truncated]"
-        sections.append(f"--- stdout before failure ---\n{stdout}")
+        sections.append(f"--- stdout before failure ---\n{_truncate(stdout, max_output_chars)}")
     return "\n\n".join(sections)

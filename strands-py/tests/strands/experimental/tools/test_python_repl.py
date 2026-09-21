@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import importlib
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,7 @@ from strands.agent.state import AgentState
 from strands.experimental.tools.python_repl.python_repl import (
     PythonReplError,
     _build_error_message,
+    _truncate,
     make_python_repl,
 )
 from strands.types.tools import ToolContext
@@ -19,8 +21,6 @@ from strands.types.tools import ToolContext
 # importlib.import_module bypasses the package attribute collision: the python_repl
 # package exports a `python_repl` name that shadows the submodule on attribute lookup.
 _python_repl_module = importlib.import_module("strands.experimental.tools.python_repl.python_repl")
-
-# ---- Helpers ----
 
 
 def _fresh_context(initial_state: dict | None = None) -> tuple[AgentState, ToolContext]:
@@ -51,8 +51,6 @@ class _FakeMontyError(Exception):
         return str(self.args[0]) if self.args else ""
 
 
-
-
 def _mock_session(value: object = None, dump: bytes = b"session-dump") -> MagicMock:
     session = MagicMock()
     session.feed_run = AsyncMock(return_value=value)
@@ -79,9 +77,6 @@ def _make_monty_patch(session: MagicMock) -> MagicMock:
     return monty
 
 
-# ---- make_python_repl validation ----
-
-
 class TestMakePythonRepl:
     def test_rejects_empty_name(self):
         with pytest.raises(ValueError, match="non-empty"):
@@ -92,11 +87,11 @@ class TestMakePythonRepl:
         [
             ({"max_duration_secs": 0}, "max_duration_secs"),
             ({"max_duration_secs": -1}, "max_duration_secs"),
-            ({"max_memory": 0}, "max_memory"),
+            ({"max_memory_bytes": 0}, "max_memory_bytes"),
             ({"max_output_chars": 0}, "max_output_chars"),
             ({"max_session_bytes": 0}, "max_session_bytes"),
-            ({"timeout": 0}, "timeout"),
-            ({"timeout": -5.0}, "timeout"),
+            ({"timeout_secs": 0}, "timeout_secs"),
+            ({"timeout_secs": -5.0}, "timeout_secs"),
         ],
     )
     def test_rejects_invalid_limits(self, kwargs, match):
@@ -111,8 +106,11 @@ class TestMakePythonRepl:
         assert custom_tool.tool_name == "py_exec"
         assert custom_tool.tool_spec["description"] == "run code"
 
+    def test_warns_when_timeout_less_than_max_duration(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            make_python_repl(max_duration_secs=30.0, timeout_secs=10.0)
 
-# ---- Successful execution ----
+        assert any("timeout_secs (10.0) is less than max_duration_secs (30.0)" in r.message for r in caplog.records)
 
 
 class TestExecution:
@@ -157,9 +155,6 @@ class TestExecution:
         session.load_session.assert_awaited_once_with(prior_dump)
 
 
-# ---- reset_state ----
-
-
 class TestResetState:
     @pytest.mark.asyncio
     async def test_reset_clears_state_before_run(self):
@@ -195,9 +190,6 @@ class TestResetState:
                     await tool(code="raise ValueError()", tool_context=ctx, reset_state=True)
 
         assert state.get("python_repl_session") is None
-
-
-# ---- Error handling ----
 
 
 class TestErrorHandling:
@@ -289,9 +281,6 @@ class TestErrorHandling:
             await tool(code="data[10]", tool_context=ctx)
 
 
-# ---- Session size cap ----
-
-
 class TestSessionSizeCap:
     @pytest.mark.asyncio
     async def test_discards_oversized_dump_and_warns_in_output(self):
@@ -312,6 +301,27 @@ class TestSessionSizeCap:
         assert "too large to persist" in tru_result
 
     @pytest.mark.asyncio
+    async def test_size_check_applies_to_base64_not_raw_bytes(self):
+        raw_dump = b"x" * 30
+        encoded_len = len(base64.b64encode(raw_dump))
+        # base64 is larger than raw
+        assert encoded_len > 30
+
+        session = _mock_session(dump=raw_dump)
+        monty = _make_monty_patch(session)
+        prior_encoded = base64.b64encode(b"old").decode("ascii")
+        state, ctx = _fresh_context({"python_repl_session": prior_encoded})
+        # Between raw (30) and encoded (40)
+        tool = make_python_repl(max_session_bytes=35)
+
+        with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
+            tru_result = await tool(code="x = 1", tool_context=ctx)
+
+        # Should be discarded because encoded size (40) > limit (35)
+        assert state.get("python_repl_session") == prior_encoded
+        assert "too large to persist" in tru_result
+
+    @pytest.mark.asyncio
     async def test_persists_dump_within_limit(self):
         small_dump = b"x" * 10
         session = _mock_session(dump=small_dump)
@@ -326,9 +336,6 @@ class TestSessionSizeCap:
         tru_stored = state.get("python_repl_session")
         assert tru_stored == base64.b64encode(small_dump).decode("ascii")
         assert "too large to persist" not in tru_result
-
-
-# ---- Output truncation ----
 
 
 class TestOutputTruncation:
@@ -348,9 +355,6 @@ class TestOutputTruncation:
 
         assert tru_result.endswith("[output truncated]")
         assert len(tru_result) < 200
-
-
-# ---- Cancellation ----
 
 
 class TestCancellation:
@@ -379,9 +383,6 @@ class TestCancellation:
         with patch.object(_python_repl_module, "AsyncMonty", return_value=monty):
             with pytest.raises(asyncio.CancelledError):
                 await run_and_cancel()
-
-
-# ---- Concurrency lock ----
 
 
 class TestConcurrencyLock:
@@ -434,9 +435,6 @@ class TestConcurrencyLock:
         assert e1 <= s2 or e2 <= s1, f"Intervals overlapped: {intervals}"
 
 
-# ---- Internal helpers ----
-
-
 class TestBuildErrorMessage:
     def test_message_and_stdout_appended_on_failure(self):
         error = _FakeMontyError("x is not defined")
@@ -450,3 +448,16 @@ class TestBuildErrorMessage:
         tru_message = _build_error_message(error, [], max_output_chars=1000)
         assert "boom" in tru_message
         assert "stdout" not in tru_message
+
+
+class TestTruncate:
+    def test_returns_text_at_exact_limit_unchanged(self):
+        assert _truncate("12345", 5) == "12345"
+
+    def test_truncates_and_appends_marker(self):
+        result = _truncate("abcdefghij", 5)
+        assert result.startswith("abcde")
+        assert result.endswith("[output truncated]")
+
+    def test_empty_string(self):
+        assert _truncate("", 10) == ""
