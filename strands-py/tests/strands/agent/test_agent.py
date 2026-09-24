@@ -1845,6 +1845,41 @@ def test_agent_redacts_input_on_triggered_guardrail():
     assert agent.messages[0]["content"][0]["text"] == "BLOCKED!"
 
 
+def test_agent_redacts_both_tool_result_and_original_input_after_tool_use():
+    @strands.tools.tool(name="search_tool")
+    def search_tool(query: str) -> str:
+        return "search result for: " + query
+
+    mocked_model = MockedModelProvider(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "t1", "name": "search_tool", "input": {"query": "test"}}}
+                ],
+            },
+            {"redactedUserContent": "BLOCKED!", "redactedAssistantContent": "INPUT BLOCKED!"},
+        ]
+    )
+
+    agent = Agent(
+        model=mocked_model,
+        system_prompt="You are a helpful assistant.",
+        callback_handler=None,
+        tools=[search_tool],
+    )
+
+    response = agent("harmful user input")
+
+    assert response.stop_reason == "guardrail_intervened"
+    assert len(agent.messages) == 4
+    # Tool result at messages[2] is redacted (preserves toolResult structure)
+    tool_result_block = [b for b in agent.messages[2]["content"] if "toolResult" in b][0]
+    assert tool_result_block["toolResult"]["content"][0]["text"] == "BLOCKED!"
+    # Original user text at messages[0] is also redacted
+    assert agent.messages[0]["content"] == [{"text": "BLOCKED!"}]
+
+
 def test_agent_restored_from_session_management_with_redacted_input():
     mocked_model = MockedModelProvider(
         [{"redactedUserContent": "BLOCKED!", "redactedAssistantContent": "INPUT BLOCKED!"}]

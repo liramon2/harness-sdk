@@ -1808,6 +1808,39 @@ describe('Agent._redactLastMessage', () => {
     expect(() => agent['_redactLastMessage'](redactMessage)).not.toThrow()
     expect(agent['messages']).toHaveLength(0)
   })
+
+  it('also redacts the original user text message after a tool-execution cycle', () => {
+    const model = new MockMessageModel().addTurn({ type: 'textBlock', text: 'Response' })
+    const agent = new Agent({ model })
+
+    agent['messages'].push(
+      new Message({ role: 'user', content: [new TextBlock('sensitive input')] }),
+      new Message({
+        role: 'assistant',
+        content: [new ToolUseBlock({ name: 'search', toolUseId: 'tool-1', input: {} })],
+      }),
+      new Message({
+        role: 'user',
+        content: [
+          new ToolResultBlock({ toolUseId: 'tool-1', status: 'success', content: [new TextBlock('harmful result')] }),
+        ],
+      })
+    )
+
+    agent['_redactLastMessage'](redactMessage)
+
+    // Tool result at index 2 is redacted (structure preserved)
+    const toolResultMsg = agent['messages'][2]!
+    const toolResult = toolResultMsg.content[0] as ToolResultBlock
+    expect(toolResult.toolUseId).toBe('tool-1')
+    expect((toolResult.content[0] as TextBlock).text).toBe(redactMessage)
+
+    // Original user input at index 0 is also redacted
+    const originalMsg = agent['messages'][0]!
+    expect(originalMsg.role).toBe('user')
+    expect(originalMsg.content).toHaveLength(1)
+    expect((originalMsg.content[0] as TextBlock).text).toBe(redactMessage)
+  })
 })
 
 describe('_estimateInputTokens', () => {

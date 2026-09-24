@@ -2558,6 +2558,44 @@ export class Agent implements LocalAgent, InvokableAgent {
         )
       }
     }
+
+    // Also scrub the most recent user text/image message when it differs from
+    // messages[-1].  After a tool-execution cycle the last message is a toolResult;
+    // this ensures the original user prompt is also redacted so sensitive content
+    // does not persist in conversation history or session storage.
+    const userTextIdx = this._findLastUserMessageIndex()
+    if (userTextIdx !== undefined && userTextIdx !== lastIndex) {
+      const userTextMsg = this.messages[userTextIdx]
+      if (userTextMsg && userTextMsg.role === 'user') {
+        this.messages[userTextIdx] = new Message({
+          role: 'user',
+          content: [new TextBlock(redactMessage)],
+          trackingId: userTextMsg.trackingId,
+        })
+      }
+    }
+  }
+
+  /**
+   * Finds the index of the last user message that contains text or image content.
+   *
+   * Tool-result messages (role=user but containing only toolResultBlock entries) are
+   * skipped so this always locates the original user prompt.
+   *
+   * @returns The index, or undefined if no such message exists.
+   */
+  private _findLastUserMessageIndex(): number | undefined {
+    for (let idx = this.messages.length - 1; idx >= 0; idx--) {
+      const msg = this.messages[idx]
+      if (msg === undefined) continue
+      if (
+        msg.role === 'user' &&
+        msg.content.some((block) => block.type === 'textBlock' || block.type === 'imageBlock')
+      ) {
+        return idx
+      }
+    }
+    return undefined
   }
 
   /**

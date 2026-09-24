@@ -1706,12 +1706,29 @@ class Agent(AgentBase, LocalAgent):
                     and event.chunk.get("redactContent")
                     and event.chunk["redactContent"].get("redactUserContentMessage")
                 ):
+                    redact_msg = str(event.chunk["redactContent"]["redactUserContentMessage"])
+
+                    # Always redact messages[-1] — in a tool loop this is the
+                    # tool-result message whose content the guardrail evaluated.
                     self.messages[-1]["content"] = self._redact_user_content(
                         self.messages[-1]["content"],
-                        str(event.chunk["redactContent"]["redactUserContentMessage"]),
+                        redact_msg,
                     )
                     if self._session_manager:
                         self._session_manager.redact_latest_message(self.messages[-1], self)
+
+                    # Also scrub the most recent user text/image message when it
+                    # differs from messages[-1].  After a tool-execution cycle the
+                    # last message is a toolResult; this ensures the original user
+                    # prompt is also redacted so sensitive content does not persist
+                    # in conversation history or session storage.
+                    last_idx = len(self.messages) - 1
+                    user_text_idx = self._find_last_user_message_index()
+                    if user_text_idx is not None and user_text_idx != last_idx:
+                        self.messages[user_text_idx]["content"] = self._redact_user_content(
+                            self.messages[user_text_idx]["content"],
+                            redact_msg,
+                        )
                 yield event
 
         return terminal
@@ -2042,6 +2059,23 @@ class Agent(AgentBase, LocalAgent):
             self._model_state = copy.deepcopy(data["model_state"])
         if self._background_tasks is not None and "state" in data:
             self._background_tasks.load_state()
+
+    def _find_last_user_message_index(self) -> int | None:
+        """Find the index of the last user message that contains text or image content.
+
+        Tool-result messages (role=user but containing only toolResult blocks) are
+        skipped so this always locates the original user prompt.
+
+        Returns:
+            The index, or ``None`` if no such message exists.
+        """
+        for idx in range(len(self.messages) - 1, -1, -1):
+            msg = self.messages[idx]
+            if msg.get("role") == "user" and any(
+                "text" in block or "image" in block for block in msg.get("content", [])
+            ):
+                return idx
+        return None
 
     def _redact_user_content(self, content: list[ContentBlock], redact_message: str) -> list[ContentBlock]:
         """Redact user content preserving toolResult blocks.
