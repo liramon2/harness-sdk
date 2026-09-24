@@ -50,9 +50,8 @@ class StorageSearchResult:
 def _normalize_key(key: str) -> str:
     """Validate and normalize a storage key for path-based backends.
 
-    Normalizes backslashes to forward slashes, collapses runs of '/',
-    strips leading and trailing '/', rejects empty keys, and rejects
-    any '..' segment.
+    Collapses runs of '/', strips leading and trailing '/', rejects empty
+    keys, rejects backslashes, and rejects any '..' segment.
 
     Used by the shipped path-based backends (InMemoryStorage, LocalFileStorage,
     S3Storage), not required by the Storage protocol itself.
@@ -64,9 +63,11 @@ def _normalize_key(key: str) -> str:
         The normalized key.
 
     Raises:
-        StorageError: If the key is empty or contains a '..' segment.
+        StorageError: If the key is empty, contains backslashes, or contains a '..' segment.
     """
-    normalized = re.sub(r"/+", "/", key.replace("\\", "/")).strip("/")
+    if "\\" in key:
+        raise StorageError(f"Invalid storage key '{key}': backslashes are not allowed")
+    normalized = re.sub(r"/+", "/", key).strip("/")
     if not normalized:
         raise StorageError("Storage key must not be empty")
     if ".." in normalized.split("/"):
@@ -77,10 +78,9 @@ def _normalize_key(key: str) -> str:
 def _normalize_prefix(prefix: str) -> str:
     """Normalize a list prefix for path-based backends.
 
-    Normalizes backslashes to forward slashes, collapses slash runs, strips
-    leading slashes. Unlike a key, an empty prefix is valid and matches
-    everything. A trailing slash is preserved because it is semantically
-    significant for prefix matching.
+    Collapses slash runs, strips leading slashes. Unlike a key, an empty
+    prefix is valid and matches everything. A trailing slash is preserved
+    because it is semantically significant for prefix matching.
 
     Used by the shipped path-based backends alongside :func:`_normalize_key`.
 
@@ -91,9 +91,11 @@ def _normalize_prefix(prefix: str) -> str:
         The normalized prefix.
 
     Raises:
-        StorageError: If the prefix contains a '..' segment.
+        StorageError: If the prefix contains backslashes or a '..' segment.
     """
-    normalized = re.sub(r"/+", "/", prefix.replace("\\", "/")).lstrip("/")
+    if "\\" in prefix:
+        raise StorageError(f"Invalid storage prefix '{prefix}': backslashes are not allowed")
+    normalized = re.sub(r"/+", "/", prefix).lstrip("/")
     if ".." in normalized.split("/"):
         raise StorageError(f"Invalid storage prefix '{prefix}': '..' path segments are not allowed")
     return normalized

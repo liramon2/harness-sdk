@@ -48,28 +48,13 @@ class TestNormalizeKey:
         assert _normalize_key("foo/bar.txt") == "foo/bar.txt"
         assert _normalize_key("foo/...bar") == "foo/...bar"
 
-    def test_normalizes_backslash_and_collapses(self):
-        assert _normalize_key("foo\\\\bar\\baz") == "foo/bar/baz"
+    def test_rejects_backslash(self):
+        with pytest.raises(StorageError, match="backslashes are not allowed"):
+            _normalize_key("foo\\bar")
 
     def test_rejects_backslash_traversal(self):
-        with pytest.raises(StorageError, match="path segments are not allowed"):
+        with pytest.raises(StorageError, match="backslashes are not allowed"):
             _normalize_key("foo\\..\\..\\secret")
-
-    @pytest.mark.parametrize(
-        "key, expected",
-        [
-            ("foo\\bar", "foo/bar"),
-            (r"C:\Users\me\AppData\Local\Temp\file.txt", "C:/Users/me/AppData/Local/Temp/file.txt"),
-            (r"C:\Users\me/subdir\file.txt", "C:/Users/me/subdir/file.txt"),
-            (
-                r"C:\Users\8523~1\AppData\Local\Temp\strands-offload-9bekczhx\artifact.txt",
-                "C:/Users/8523~1/AppData/Local/Temp/strands-offload-9bekczhx/artifact.txt",
-            ),
-        ],
-        ids=["simple", "absolute", "mixed-separators", "short-path"],
-    )
-    def test_normalizes_windows_path(self, key, expected):
-        assert _normalize_key(key) == expected
 
 
 class TestNormalizePrefix:
@@ -92,8 +77,9 @@ class TestNormalizePrefix:
         with pytest.raises(StorageError, match="path segments are not allowed"):
             _normalize_prefix("foo/../bar")
 
-    def test_normalizes_backslash_and_collapses(self):
-        assert _normalize_prefix("foo\\\\bar\\") == "foo/bar/"
+    def test_rejects_backslash(self):
+        with pytest.raises(StorageError, match="backslashes are not allowed"):
+            _normalize_prefix("foo\\bar/")
 
 
 class TestNamespacedStorage:
