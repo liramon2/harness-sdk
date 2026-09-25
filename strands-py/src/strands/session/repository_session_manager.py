@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from ..agent.state import AgentState
 from ..tools._tool_helpers import generate_missing_tool_result_content
 from ..types.agent import LocalAgent
-from ..types.content import ContentBlock, Message, MessageMetadata, _generate_tracking_id
+from ..types.content import ContentBlock, Message, _generate_tracking_id
 from ..types.exceptions import SessionException
 from ..types.session import (
     Session,
@@ -74,11 +74,8 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
         # Track the previously synced internal state for each agent to detect changes.
         self._last_synced_internal_state: dict[str, dict[str, Any]] = {}
 
-        # Stored messages of each agent that may still be in its memory, in id order.
+        # Held records per agent, used by redact_latest_message to find alias records.
         self._held_records: dict[str, list[SessionMessage]] = {}
-
-        # The content and metadata objects of each held record when it was last written.
-        self._written_refs: dict[tuple[str, int], tuple[list[ContentBlock] | None, MessageMetadata | None]] = {}
 
     def append_message(self, message: Message, agent: "LocalAgent", **kwargs: Any) -> None:
         """Append a message to the agent's session.
@@ -99,7 +96,6 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
         self._latest_agent_message[agent.agent_id] = session_message
         self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
         self._held_records.setdefault(agent.agent_id, []).append(session_message)
-        self._snapshot_written_refs(agent.agent_id, session_message)
 
     def redact_latest_message(self, redact_message: Message, agent: "LocalAgent", **kwargs: Any) -> None:
         """Redact the latest message appended to the session.
@@ -114,17 +110,11 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
             raise SessionException("No message to redact.")
         latest_agent_message.redact_message = redact_message
         self.session_repository.update_message(self.session_id, agent.agent_id, latest_agent_message)
-        self._snapshot_written_refs(agent.agent_id, latest_agent_message)
 
-        # A retry with the caller's message list holds the same message object through an earlier record too.
-        self._rewrite_records(
-            agent.agent_id,
-            [
-                record
-                for record in self._held_records.get(agent.agent_id, [])
-                if record is not latest_agent_message and record.to_message() is redact_message
-            ],
-        )
+        # A retried prompt may have stored the same dict in an earlier record; rewrite those too.
+        for r in self._held_records.get(agent.agent_id, []):
+            if r is not latest_agent_message and r.to_message() is redact_message:
+                self.session_repository.update_message(self.session_id, agent.agent_id, r)
 
     def sync_agent(self, agent: "LocalAgent", **kwargs: Any) -> None:
         """Serialize and update the agent into the session repository.
@@ -150,9 +140,8 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
         current_conversation_manager_state = agent.conversation_manager.get_state()
         current_model_state = agent._model_state
 
-        # Skipped for stateful models: agent.messages may not reflect server-side state,
-        # so pruning against it would incorrectly discard tracking state.
-        changed_records = [] if agent.model.stateful else self._prune_held_records(agent)
+        # Prune held records so tracking state stays bounded.
+        self._prune_held_records(agent)
 
         # Check if we have a previous state to compare against
         last_synced = self._last_synced_internal_state.get(agent.agent_id)
@@ -173,7 +162,6 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
             )
 
         if not state_changed and not internal_state_changed and not conversation_manager_state_changed:
-            self._rewrite_records(agent.agent_id, changed_records)
             logger.debug(
                 "agent_id=<%s> | session_id=<%s> | skipping sync, no changes detected",
                 agent.agent_id,
@@ -191,8 +179,7 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
             conversation_manager_state_changed,
         )
 
-        # Perform the update; rewrite edited messages before the agent record
-        self._rewrite_records(agent.agent_id, changed_records)
+        # Perform the update
         self.session_repository.update_agent(
             self.session_id,
             SessionAgent.from_agent(agent),
@@ -206,46 +193,19 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
             "model_state": copy.deepcopy(current_model_state),
         }
 
-    def _prune_held_records(self, agent: "LocalAgent") -> list[SessionMessage]:
-        """Prune stale held records, then return those whose message was edited since last write.
+    def _prune_held_records(self, agent: "LocalAgent") -> None:
+        """Drop held records whose message is no longer in ``agent.messages``.
 
         A record is held while its message (matched by tracking id, or by identity for messages
-        without one) is in ``agent.messages``. Records whose message left the agent's memory are
-        removed from ``_held_records`` and ``_written_refs``.
+        without one) is in ``agent.messages``.
         """
         held_ids = {message.get("tracking_id") for message in agent.messages} - {None}
         held_objects = {id(message) for message in agent.messages}
-        held = []
-        for record in self._held_records.get(agent.agent_id, []):
-            message = record.to_message()
-            if message.get("tracking_id") in held_ids or id(message) in held_objects:
-                held.append(record)
-            else:
-                self._written_refs.pop((agent.agent_id, record.message_id), None)
-        self._held_records[agent.agent_id] = held
-        return [record for record in held if self._is_edited(agent.agent_id, record)]
-
-    def _is_edited(self, agent_id: str, record: SessionMessage) -> bool:
-        """Whether the record's message content or metadata object was replaced since it was written.
-
-        Detects replacement of the content or metadata object (identity comparison), not deep
-        in-place mutation of the existing objects. The SDK's edit paths (redaction, truncation,
-        pinning) replace the content list, so identity comparison is sufficient.
-        """
-        written = self._written_refs.get((agent_id, record.message_id))
-        message = record.to_message()
-        return written is None or written[0] is not message.get("content") or written[1] is not message.get("metadata")
-
-    def _snapshot_written_refs(self, agent_id: str, record: SessionMessage) -> None:
-        """Snapshot the content and metadata objects of a record after writing it to storage."""
-        message = record.to_message()
-        self._written_refs[(agent_id, record.message_id)] = (message.get("content"), message.get("metadata"))
-
-    def _rewrite_records(self, agent_id: str, records: list[SessionMessage]) -> None:
-        """Write held records whose backing message was edited in place back to storage."""
-        for record in records:
-            self.session_repository.update_message(self.session_id, agent_id, record)
-            self._snapshot_written_refs(agent_id, record)
+        self._held_records[agent.agent_id] = [
+            record
+            for record in self._held_records.get(agent.agent_id, [])
+            if record.to_message().get("tracking_id") in held_ids or id(record.to_message()) in held_objects
+        ]
 
     def initialize(self, agent: "LocalAgent", **kwargs: Any) -> None:
         """Initialize an agent with a session.
@@ -293,7 +253,6 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
                 session_message = SessionMessage.from_message(message, i)
                 self.session_repository.create_message(self.session_id, agent.agent_id, session_message)
                 self._held_records[agent.agent_id].append(session_message)
-                self._snapshot_written_refs(agent.agent_id, session_message)
             self._latest_agent_message[agent.agent_id] = session_message
         else:
             logger.debug(
@@ -322,8 +281,6 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
                 offset=offset,
             )
             self._held_records[agent.agent_id] = list(session_messages)
-            for session_message in session_messages:
-                self._snapshot_written_refs(agent.agent_id, session_message)
             if len(session_messages) > 0:
                 self._latest_agent_message[agent.agent_id] = session_messages[-1]
 
