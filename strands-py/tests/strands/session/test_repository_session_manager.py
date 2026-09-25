@@ -1369,3 +1369,60 @@ def test_fix_broken_tool_use_keeps_paired_tool_result_after_a_text_turn(session_
     fixed_messages = session_manager._fix_broken_tool_use(messages)
 
     assert fixed_messages == expected
+
+
+def test_prune_held_records_prunes_stale_and_returns_dirty(session_manager):
+    agent = Agent(agent_id="a", session_manager=session_manager)
+    m1 = {"role": "user", "content": [{"text": "one"}]}
+    m2 = {"role": "assistant", "content": [{"text": "two"}]}
+    session_manager.append_message(m1, agent)
+    session_manager.append_message(m2, agent)
+    agent.messages = [m1, m2]
+
+    # Nothing edited yet
+    assert session_manager._prune_held_records(agent) == []
+
+    # Edit m1 in place → returned as dirty
+    m1["content"] = [{"text": "edited"}]
+    dirty = session_manager._prune_held_records(agent)
+    assert len(dirty) == 1
+    assert dirty[0].to_message() is m1
+
+    # Drop m1 → pruned from held records and written refs
+    agent.messages = [m2]
+    session_manager._prune_held_records(agent)
+    assert len(session_manager._held_records["a"]) == 1
+    assert ("a", 0) not in session_manager._written_refs
+
+
+def test_restore_after_redacting_alias_records_returns_redacted_conversation(mock_repository):
+    """A fresh restore over the same repository must see both copies redacted (the cross-process scenario)."""
+    sm = RepositorySessionManager(session_id="s", session_repository=mock_repository)
+    agent = Agent(agent_id="a", conversation_manager=NullConversationManager(), session_manager=sm)
+    msg = {"role": "user", "content": [{"text": "secret"}]}
+    sm.append_message(msg, agent)  # record 0
+    sm.append_message(msg, agent)  # record 1 — same object
+
+    msg["content"] = [{"text": "[redacted]"}]
+    sm.redact_latest_message(msg, agent)
+
+    # Simulate a new process: fresh manager and agent over the same repository.
+    sm2 = RepositorySessionManager(session_id="s", session_repository=mock_repository)
+    restored = Agent(agent_id="a", conversation_manager=NullConversationManager(), session_manager=sm2)
+
+    assert len(restored.messages) == 2
+    assert restored.messages[0]["content"] == [{"text": "[redacted]"}]
+    assert restored.messages[1]["content"] == [{"text": "[redacted]"}]
+
+
+def test_sync_rewrites_in_place_edited_records(session_manager):
+    agent = Agent(agent_id="a", session_manager=session_manager)
+    msg = {"role": "user", "content": [{"text": "original"}]}
+    session_manager.append_message(msg, agent)
+    agent.messages = [msg]
+
+    msg["content"] = [{"text": "mutated"}]
+    session_manager.sync_agent(agent)
+
+    stored = session_manager.session_repository.read_message("test-session", "a", 0)
+    assert stored.to_message()["content"] == [{"text": "mutated"}]
