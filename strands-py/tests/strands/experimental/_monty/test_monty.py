@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from strands.experimental.tools import _monty as _monty_module
-from strands.experimental.tools._monty import build_error_message, run_session
+from strands.experimental._monty import _monty as _monty_module
+from strands.experimental._monty import build_error_message, run_session
 
 from .conftest import FakeMontyError, make_monty_patch, mock_session
 

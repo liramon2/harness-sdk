@@ -13,15 +13,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from strands.agent.state import AgentState
-from strands.experimental.tools import _monty as _monty_module
+from strands.experimental._monty import _monty as _monty_module
 from strands.experimental.tools._python_repl import _python_repl as _python_repl_module
 from strands.experimental.tools._python_repl._python_repl import (
     PythonReplError,
     make_python_repl,
 )
 from strands.types.tools import ToolContext
-
-from .conftest import FakeMontyError, make_monty_patch, mock_session
+from tests.strands.experimental._monty.conftest import FakeMontyError, make_monty_patch, mock_session
 
 
 def _fresh_context(initial_state: dict | None = None) -> tuple[AgentState, ToolContext]:

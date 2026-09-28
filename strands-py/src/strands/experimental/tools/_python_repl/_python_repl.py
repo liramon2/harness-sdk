@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from ....tools.decorator import tool
 from ....types.tools import ToolContext
-from .._monty import (
+from ..._monty import (
     CollectStreams,
     MontyError,
     ResourceLimits,
