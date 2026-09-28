@@ -707,7 +707,6 @@ a2a_client = make_a2a_client(
             ),
         )),
     ],
-    max_bytes=1 * 1024 * 1024,
 )
 agent = Agent(tools=[a2a_client])
 agent("What has the research agent found recently?")

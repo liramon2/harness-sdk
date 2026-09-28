@@ -69,7 +69,7 @@ const result = await agent.invoke('Ask the agent at https://agent.example.com to
 - **Discover** connects to the endpoint and returns the agent card as a plain JSON object.
 - **Send message** calls the A2A agent and returns the serialized response message.
 
-Both operations enforce the endpoint allowlist before making any network connection and reject results whose JSON-serialized size exceeds `maxBytes` (default 5 MiB).
+Both operations enforce the endpoint allowlist before making any network connection.
 
 ## Limitations
 

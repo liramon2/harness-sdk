@@ -255,7 +255,6 @@ async function a2aClientExample() {
         cardResolver: new DefaultAgentCardResolver({ fetchImpl: authFetch }),
       })],
     ],
-    maxBytes: 1 * 1024 * 1024,
   })
 
   const agent = new Agent({ tools: [a2aClient] })
