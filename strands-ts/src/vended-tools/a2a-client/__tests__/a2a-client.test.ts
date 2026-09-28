@@ -72,18 +72,6 @@ describe('a2a-client tool', () => {
       )
     })
 
-    it('throws when maxBytes is zero', () => {
-      expect(() => makeA2AClient({ allowedEndpoints: ENDPOINTS, maxBytes: 0 })).toThrow(
-        'maxBytes must be a positive integer'
-      )
-    })
-
-    it('throws when maxBytes is negative', () => {
-      expect(() => makeA2AClient({ allowedEndpoints: ENDPOINTS, maxBytes: -1 })).toThrow(
-        'maxBytes must be a positive integer'
-      )
-    })
-
     it('uses custom name', () => {
       const t = makeA2AClient({ name: 'my_agent', allowedEndpoints: ENDPOINTS })
       expect(t.name).toBe('my_agent')
@@ -145,13 +133,6 @@ describe('a2a-client tool', () => {
         return true
       })
     })
-
-    it('rejects an oversized agent card', async () => {
-      mockGetAgentCard.mockResolvedValue({ ...FAKE_CARD, data: 'x'.repeat(1000) })
-
-      const t = makeA2AClient({ allowedEndpoints: ENDPOINTS, maxBytes: 100 })
-      await expect(t.invoke({ operation: 'discover', endpoint: ENDPOINT })).rejects.toThrow('exceeds maxBytes limit')
-    })
   })
 
   describe('send_message', () => {
@@ -200,15 +181,6 @@ describe('a2a-client tool', () => {
           expect(err.cause).toBe(original)
           return true
         }
-      )
-    })
-
-    it('rejects an oversized response', async () => {
-      setupSendMessageResponse('x'.repeat(1000))
-
-      const t = makeA2AClient({ allowedEndpoints: ENDPOINTS, maxBytes: 100 })
-      await expect(t.invoke({ operation: 'send_message', endpoint: ENDPOINT, message: 'Hello' })).rejects.toThrow(
-        'exceeds maxBytes limit'
       )
     })
 

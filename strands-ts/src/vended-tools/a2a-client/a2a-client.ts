@@ -7,8 +7,6 @@ import { A2AAgent } from '../../a2a/a2a-agent.js'
 import { A2AStreamUpdateEvent } from '../../a2a/events.js'
 import { z } from 'zod'
 
-const DEFAULT_MAX_BYTES = 5 * 1024 * 1024
-
 /**
  * Zod schema for A2A client input validation.
  */
@@ -67,7 +65,6 @@ export interface MakeA2AClientOptions {
   name?: string
   description?: string
   allowedEndpoints: EndpointEntry[]
-  maxBytes?: number
 }
 
 /**
@@ -78,11 +75,6 @@ export interface MakeA2AClientOptions {
 export function makeA2AClient(options: MakeA2AClientOptions): ReturnType<typeof tool> {
   if (options.allowedEndpoints.length === 0) {
     throw new Error('allowedEndpoints must contain at least one endpoint')
-  }
-
-  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES
-  if (!Number.isInteger(maxBytes) || maxBytes <= 0) {
-    throw new Error(`maxBytes must be a positive integer, got ${String(maxBytes)}`)
   }
 
   const endpointsMap = normalizeEndpoints(options.allowedEndpoints)
@@ -112,14 +104,14 @@ export function makeA2AClient(options: MakeA2AClientOptions): ReturnType<typeof 
       })
 
       if (operation === 'discover') {
-        return handleDiscover(agent, maxBytes) as unknown as Promise<JSONValue>
+        return handleDiscover(agent) as unknown as Promise<JSONValue>
       }
 
       if (operation === 'send_message') {
         if (!message) {
           throw new Error("'message' is required for send_message operation")
         }
-        return handleSendMessage(agent, message, maxBytes) as unknown as Promise<JSONValue>
+        return handleSendMessage(agent, message) as unknown as Promise<JSONValue>
       }
 
       throw new Error(`Unknown operation: '${String(operation)}'`)
@@ -141,7 +133,7 @@ function normalizeEndpoints(entries: EndpointEntry[]): Record<string, ClientFact
   return result
 }
 
-async function handleDiscover(agent: A2AAgent, maxBytes: number): Promise<AgentCard> {
+async function handleDiscover(agent: A2AAgent): Promise<AgentCard> {
   let agentCard: AgentCard
   try {
     agentCard = await agent.getAgentCard()
@@ -149,18 +141,10 @@ async function handleDiscover(agent: A2AAgent, maxBytes: number): Promise<AgentC
     throw new Error(`Failed to discover agent card at '${agent.id}': ${String(error)}`, { cause: error })
   }
 
-  const size = new TextEncoder().encode(JSON.stringify(agentCard)).length
-  if (size > maxBytes) {
-    throw new Error(`Agent card response exceeds maxBytes limit (${size} > ${maxBytes})`)
-  }
   return agentCard
 }
 
-async function handleSendMessage(
-  agent: A2AAgent,
-  message: string,
-  maxBytes: number
-): Promise<{ message: MessageData }> {
+async function handleSendMessage(agent: A2AAgent, message: string): Promise<{ message: MessageData }> {
   let taskState: string | undefined
   let statusText = ''
   let resultMessage: MessageData
@@ -191,10 +175,5 @@ async function handleSendMessage(
     )
   }
 
-  const result = { message: resultMessage }
-  const size = new TextEncoder().encode(JSON.stringify(result)).length
-  if (size > maxBytes) {
-    throw new Error(`Response exceeds maxBytes limit (${size} > ${maxBytes})`)
-  }
-  return result
+  return { message: resultMessage }
 }

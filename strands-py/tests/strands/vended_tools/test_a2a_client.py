@@ -85,19 +85,6 @@ class TestDiscover:
             await tool(operation="discover", endpoint=_ENDPOINT)
         assert exc_info.value.__cause__ is original
 
-    @pytest.mark.asyncio
-    async def test_rejects_oversized_agent_card(self, monkeypatch):
-        class _BigCardAgent(_FakeA2AAgent):
-            async def get_agent_card(self) -> _FakeAgentCard:
-                card = _FakeAgentCard()
-                card.model_dump = lambda **_: {"data": "x" * 1000}
-                return card
-
-        monkeypatch.setattr(a2a_client_module, "A2AAgent", _BigCardAgent)
-        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS, max_bytes=100)
-        with pytest.raises(A2AClientError, match="exceeds max_bytes limit"):
-            await tool(operation="discover", endpoint=_ENDPOINT)
-
 
 class TestSendMessage:
     @pytest.mark.asyncio
@@ -155,28 +142,11 @@ class TestSendMessage:
             await tool(operation="send_message", endpoint=_ENDPOINT, message="Hello")
         assert exc_info.value.__cause__ is original
 
-    @pytest.mark.asyncio
-    async def test_rejects_oversized_response(self, monkeypatch):
-        class _BigResponseAgent(_FakeA2AAgent):
-            async def invoke_async(self, prompt: str) -> _FakeAgentResult:
-                result = _FakeAgentResult()
-                result.message = {"role": "assistant", "content": [{"text": "x" * 1000}]}
-                return result
-
-        monkeypatch.setattr(a2a_client_module, "A2AAgent", _BigResponseAgent)
-        tool = make_a2a_client(allowed_endpoints=_ENDPOINTS, max_bytes=100)
-        with pytest.raises(A2AClientError, match="exceeds max_bytes limit"):
-            await tool(operation="send_message", endpoint=_ENDPOINT, message="Hello")
-
 
 class TestFactory:
     def test_empty_allowed_endpoints_raises(self):
         with pytest.raises(ValueError, match="allowed_endpoints must contain at least one endpoint"):
             make_a2a_client(allowed_endpoints=[])
-
-    def test_non_positive_max_bytes_raises(self):
-        with pytest.raises(ValueError, match="max_bytes must be positive"):
-            make_a2a_client(allowed_endpoints=_ENDPOINTS, max_bytes=0)
 
     def test_custom_name(self):
         tool = make_a2a_client(name="my_agent", allowed_endpoints=_ENDPOINTS)

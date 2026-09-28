@@ -12,8 +12,8 @@ state between invocations.  Each endpoint may carry its own
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING, Any, Literal, Sequence, Union
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
 try:
     from a2a.client import ClientConfig
@@ -25,8 +25,6 @@ from ...tools.decorator import tool
 
 if TYPE_CHECKING:
     from ...tools.decorator import DecoratedFunctionTool
-
-_DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 
 _A2AClientOutput = dict[str, Any]
 
@@ -42,7 +40,7 @@ class A2AClientError(RuntimeError):
     """Raised when an A2A operation fails."""
 
 
-AllowedEndpoint = Union[str, tuple[str, ClientConfig]]
+AllowedEndpoint = str | tuple[str, ClientConfig]
 """A permitted endpoint: a bare URL string, or a ``(url, ClientConfig)`` tuple."""
 
 
@@ -51,7 +49,6 @@ def make_a2a_client(
     name: str = "a2a_client",
     description: str | None = None,
     allowed_endpoints: Sequence[AllowedEndpoint],
-    max_bytes: int = _DEFAULT_MAX_BYTES,
 ) -> DecoratedFunctionTool:
     """Create an A2A client tool.
 
@@ -64,17 +61,12 @@ def make_a2a_client(
             string (no custom config) or a ``(url, ClientConfig)`` tuple for
             per-endpoint authentication.  Any endpoint not in this list is
             rejected before a network connection is made.
-        max_bytes: Maximum size in bytes of the result dict returned to the model.
-            Does not cap the network transfer or binary parts.
-            Results larger than this cap are rejected with an error.
 
     Returns:
         A decorated tool that communicates with A2A agents.
     """
     if not allowed_endpoints:
         raise ValueError("allowed_endpoints must contain at least one endpoint")
-    if max_bytes <= 0:
-        raise ValueError(f"max_bytes must be positive, got {max_bytes}")
 
     endpoints_map = _normalize_endpoints(allowed_endpoints)
 
@@ -115,12 +107,12 @@ def make_a2a_client(
         agent = A2AAgent(endpoint, client_config=endpoints_map[endpoint])
 
         if operation == "discover":
-            return await _handle_discover(agent, max_bytes)
+            return await _handle_discover(agent)
 
         if operation == "send_message":
             if not message:
                 raise A2AClientError("'message' is required for send_message operation")
-            return await _handle_send_message(agent, message, max_bytes)
+            return await _handle_send_message(agent, message)
 
         raise A2AClientError(f"Unknown operation: {operation!r}")
 
@@ -139,21 +131,17 @@ def _normalize_endpoints(entries: Sequence[AllowedEndpoint]) -> dict[str, Client
     return result
 
 
-async def _handle_discover(agent: A2AAgent, max_bytes: int) -> _A2AClientOutput:
+async def _handle_discover(agent: A2AAgent) -> _A2AClientOutput:
     """Fetch the agent card via *agent* and return it as a dict."""
     try:
         agent_card = await agent.get_agent_card()
     except Exception as error:
         raise A2AClientError(f"Failed to discover agent card at {agent.endpoint!r}: {error}") from error
 
-    result: dict[str, Any] = agent_card.model_dump(mode="json", exclude_none=True)
-    size = len(json.dumps(result).encode())
-    if size > max_bytes:
-        raise A2AClientError(f"Agent card response exceeds max_bytes limit ({size} > {max_bytes})")
-    return result
+    return agent_card.model_dump(mode="json", exclude_none=True)
 
 
-async def _handle_send_message(agent: A2AAgent, message_text: str, max_bytes: int) -> _A2AClientOutput:
+async def _handle_send_message(agent: A2AAgent, message_text: str) -> _A2AClientOutput:
     """Send *message_text* via *agent* and return the response as a dict."""
     try:
         agent_result = await agent.invoke_async(message_text)
@@ -168,7 +156,4 @@ async def _handle_send_message(agent: A2AAgent, message_text: str, max_bytes: in
         )
 
     result: dict[str, Any] = {"message": agent_result.message}
-    size = len(json.dumps(result).encode())
-    if size > max_bytes:
-        raise A2AClientError(f"Response exceeds max_bytes limit ({size} > {max_bytes})")
     return result
