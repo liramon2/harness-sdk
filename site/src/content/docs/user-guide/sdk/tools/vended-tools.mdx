@@ -698,15 +698,15 @@ from strands import Agent
 from strands.vended_tools import make_a2a_client
 
 a2a_client = make_a2a_client(
-    allowed_endpoints={
-        "https://agent.example.com": None,
-        "https://researcher.example.com": ClientConfig(
+    allowed_endpoints=[
+        "https://agent.example.com",
+        ("https://researcher.example.com", ClientConfig(
             httpx_client=httpx.AsyncClient(
                 headers={"Authorization": "Bearer your-token"},
                 timeout=60.0,
             ),
-        ),
-    },
+        )),
+    ],
     max_bytes=1 * 1024 * 1024,
 )
 agent = Agent(tools=[a2a_client])

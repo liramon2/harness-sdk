@@ -243,18 +243,18 @@ async function a2aClientExample() {
   })
 
   const a2aClient = makeA2AClient({
-    allowedEndpoints: {
+    allowedEndpoints: [
       // No auth needed
-      'https://agent.example.com': undefined,
+      'https://agent.example.com',
       // Custom ClientFactory for authenticated requests
-      'https://researcher.example.com': new ClientFactory({
+      ['https://researcher.example.com', new ClientFactory({
         transports: [
           new JsonRpcTransportFactory({ fetchImpl: authFetch }),
           new RestTransportFactory({ fetchImpl: authFetch }),
         ],
         cardResolver: new DefaultAgentCardResolver({ fetchImpl: authFetch }),
-      }),
-    },
+      })],
+    ],
     maxBytes: 1 * 1024 * 1024,
   })
 

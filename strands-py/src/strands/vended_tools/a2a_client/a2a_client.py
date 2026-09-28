@@ -1,7 +1,7 @@
 """A2A client tool for communicating with remote A2A-protocol agents.
 
-Provides :func:`make_a2a_client`, a factory that requires an explicit mapping of
-permitted endpoints to their :class:`~a2a.client.ClientConfig`, plus optional size limits.
+Provides :func:`make_a2a_client`, a factory that requires an explicit list of
+permitted endpoints (with optional :class:`~a2a.client.ClientConfig`), plus optional size limits.
 
 The tool is a stateless shim over :class:`~strands.agent.a2a_agent.A2AAgent`.
 A fresh ``A2AAgent`` is constructed on every call so the tool carries no session
@@ -13,7 +13,7 @@ state between invocations.  Each endpoint may carry its own
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Sequence, Union
 
 try:
     from a2a.client import ClientConfig
@@ -42,11 +42,15 @@ class A2AClientError(RuntimeError):
     """Raised when an A2A operation fails."""
 
 
+AllowedEndpoint = Union[str, tuple[str, ClientConfig]]
+"""A permitted endpoint: a bare URL string, or a ``(url, ClientConfig)`` tuple."""
+
+
 def make_a2a_client(
     *,
     name: str = "a2a_client",
     description: str | None = None,
-    allowed_endpoints: dict[str, ClientConfig | None],
+    allowed_endpoints: Sequence[AllowedEndpoint],
     max_bytes: int = _DEFAULT_MAX_BYTES,
 ) -> DecoratedFunctionTool:
     """Create an A2A client tool.
@@ -56,10 +60,10 @@ def make_a2a_client(
         description: Tool description shown to the model. When ``None``,
             generated from ``DEFAULT_A2A_CLIENT_DESCRIPTION`` plus the
             permitted endpoints list.
-        allowed_endpoints: Mapping of permitted base URLs to their
-            :class:`~a2a.client.ClientConfig`.  Use ``None`` as the value for
-            endpoints that need no custom configuration. Any endpoint not in this
-            mapping is rejected before a network connection is made.
+        allowed_endpoints: Permitted base URLs.  Each entry is either a bare URL
+            string (no custom config) or a ``(url, ClientConfig)`` tuple for
+            per-endpoint authentication.  Any endpoint not in this list is
+            rejected before a network connection is made.
         max_bytes: Maximum size in bytes of the result dict returned to the model.
             Does not cap the network transfer or binary parts.
             Results larger than this cap are rejected with an error.
@@ -72,8 +76,10 @@ def make_a2a_client(
     if max_bytes <= 0:
         raise ValueError(f"max_bytes must be positive, got {max_bytes}")
 
+    endpoints_map = _normalize_endpoints(allowed_endpoints)
+
     if description is None:
-        endpoints_list = ", ".join(sorted(allowed_endpoints))
+        endpoints_list = ", ".join(sorted(endpoints_map))
         description = f"{DEFAULT_A2A_CLIENT_DESCRIPTION} Permitted endpoints: {endpoints_list}."
 
     @tool(name=name, description=description)
@@ -100,13 +106,13 @@ def make_a2a_client(
                 underlying A2A call fails.
         """
         # Check if the endpoint is allowed via exact-match.
-        if endpoint not in allowed_endpoints:
+        if endpoint not in endpoints_map:
             raise A2AClientError(
                 f"Endpoint '{endpoint}' is not in the allowed endpoints list. "
-                f"Permitted endpoints: {sorted(allowed_endpoints)}"
+                f"Permitted endpoints: {sorted(endpoints_map)}"
             )
 
-        agent = A2AAgent(endpoint, client_config=allowed_endpoints[endpoint])
+        agent = A2AAgent(endpoint, client_config=endpoints_map[endpoint])
 
         if operation == "discover":
             return await _handle_discover(agent, max_bytes)
@@ -119,6 +125,18 @@ def make_a2a_client(
         raise A2AClientError(f"Unknown operation: {operation!r}")
 
     return a2a_client_tool
+
+
+def _normalize_endpoints(entries: Sequence[AllowedEndpoint]) -> dict[str, ClientConfig | None]:
+    """Convert the user-facing list into an internal ``{url: config}`` mapping."""
+    result: dict[str, ClientConfig | None] = {}
+    for entry in entries:
+        if isinstance(entry, str):
+            result[entry] = None
+        else:
+            url, config = entry
+            result[url] = config
+    return result
 
 
 async def _handle_discover(agent: A2AAgent, max_bytes: int) -> _A2AClientOutput:

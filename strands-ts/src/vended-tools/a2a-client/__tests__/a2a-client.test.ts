@@ -33,7 +33,7 @@ const FAKE_CARD: AgentCard = {
 }
 
 const ENDPOINT = 'https://agent.example.com'
-const ENDPOINTS: Record<string, undefined> = { [ENDPOINT]: undefined }
+const ENDPOINTS: string[] = [ENDPOINT]
 
 async function* mockStream(...events: unknown[]): AsyncGenerator<unknown, void, undefined> {
   for (const event of events) {
@@ -67,7 +67,7 @@ describe('a2a-client tool', () => {
 
   describe('factory', () => {
     it('throws when allowedEndpoints is empty', () => {
-      expect(() => makeA2AClient({ allowedEndpoints: {} })).toThrow(
+      expect(() => makeA2AClient({ allowedEndpoints: [] })).toThrow(
         'allowedEndpoints must contain at least one endpoint'
       )
     })
@@ -91,7 +91,7 @@ describe('a2a-client tool', () => {
 
     it('default description includes endpoints', () => {
       const t = makeA2AClient({
-        allowedEndpoints: { 'https://a.example.com': undefined, 'https://b.example.com': undefined },
+        allowedEndpoints: ['https://a.example.com', 'https://b.example.com'],
       })
       expect(t.description).toContain('https://a.example.com')
       expect(t.description).toContain('https://b.example.com')
@@ -109,7 +109,7 @@ describe('a2a-client tool', () => {
   describe('allowlist', () => {
     it('rejects an endpoint not in the allowlist', async () => {
       const t = makeA2AClient({
-        allowedEndpoints: { 'https://a.example.com': undefined, 'https://b.example.com': undefined },
+        allowedEndpoints: ['https://a.example.com', 'https://b.example.com'],
       })
       await expect(t.invoke({ operation: 'discover', endpoint: 'https://evil.example.com' })).rejects.toThrow(
         'not in the allowed endpoints list'
@@ -118,7 +118,7 @@ describe('a2a-client tool', () => {
 
     it('includes permitted endpoints in the rejection message', async () => {
       const t = makeA2AClient({
-        allowedEndpoints: { 'https://a.example.com': undefined },
+        allowedEndpoints: ['https://a.example.com'],
       })
       await expect(t.invoke({ operation: 'discover', endpoint: 'https://evil.example.com' })).rejects.toThrow(
         'https://a.example.com'
@@ -266,7 +266,7 @@ describe('a2a-client tool', () => {
         }),
       }
 
-      const t = makeA2AClient({ allowedEndpoints: { [ENDPOINT]: customFactory as unknown as ClientFactoryType } })
+      const t = makeA2AClient({ allowedEndpoints: [[ENDPOINT, customFactory as unknown as ClientFactoryType]] })
       await t.invoke({ operation: 'discover', endpoint: ENDPOINT })
 
       expect(customFactory.createFromUrl).toHaveBeenCalledWith(ENDPOINT, undefined)

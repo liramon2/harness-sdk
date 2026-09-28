@@ -25,7 +25,7 @@ _FAKE_CARD = {
 _FAKE_MESSAGE = {"role": "assistant", "content": [{"text": "Hello from agent"}]}
 
 _ENDPOINT = "https://agent.example.com"
-_ENDPOINTS: dict[str, ClientConfig | None] = {_ENDPOINT: None}
+_ENDPOINTS: list[str] = [_ENDPOINT]
 
 
 class _FakeAgentCard:
@@ -58,7 +58,7 @@ def fake_agent(monkeypatch):
 class TestAllowlist:
     @pytest.mark.asyncio
     async def test_rejects_endpoint_not_in_allowlist(self):
-        tool = make_a2a_client(allowed_endpoints={"https://a.example.com": None, "https://b.example.com": None})
+        tool = make_a2a_client(allowed_endpoints=["https://a.example.com", "https://b.example.com"])
         with pytest.raises(A2AClientError, match="not in the allowed endpoints list") as exc_info:
             await tool(operation="discover", endpoint="https://evil.example.com")
         assert "https://a.example.com" in str(exc_info.value)
@@ -172,7 +172,7 @@ class TestSendMessage:
 class TestFactory:
     def test_empty_allowed_endpoints_raises(self):
         with pytest.raises(ValueError, match="allowed_endpoints must contain at least one endpoint"):
-            make_a2a_client(allowed_endpoints={})
+            make_a2a_client(allowed_endpoints=[])
 
     def test_non_positive_max_bytes_raises(self):
         with pytest.raises(ValueError, match="max_bytes must be positive"):
@@ -183,7 +183,7 @@ class TestFactory:
         assert tool.tool_name == "my_agent"
 
     def test_description_includes_endpoints(self):
-        tool = make_a2a_client(allowed_endpoints={"https://a.example.com": None, "https://b.example.com": None})
+        tool = make_a2a_client(allowed_endpoints=["https://a.example.com", "https://b.example.com"])
         desc = tool.tool_spec["description"]
         assert "https://a.example.com" in desc
         assert "https://b.example.com" in desc
@@ -206,7 +206,7 @@ class TestFactory:
 
         monkeypatch.setattr(a2a_client_module, "A2AAgent", _CapturingAgent)
         config = ClientConfig()
-        tool = make_a2a_client(allowed_endpoints={_ENDPOINT: config})
+        tool = make_a2a_client(allowed_endpoints=[(_ENDPOINT, config)])
         await tool(operation="discover", endpoint=_ENDPOINT)
         assert seen_config[0] is config
 

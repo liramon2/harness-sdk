@@ -25,6 +25,12 @@ const a2aClientInputSchema = z.object({
 })
 
 /**
+ * A single endpoint entry: either a bare URL string, or a
+ * `[url, ClientFactory]` tuple for endpoints that need custom configuration.
+ */
+export type EndpointEntry = string | [string, ClientFactoryType]
+
+/**
  * Default description shown to the model for the A2A client tool.
  *
  * @example
@@ -37,16 +43,16 @@ const a2aClientInputSchema = z.object({
  * })
  *
  * const a2aClient = makeA2AClient({
- *   allowedEndpoints: {
- *     'https://agent.example.com': undefined,
- *     'https://secure-agent.example.com': new ClientFactory({
+ *   allowedEndpoints: [
+ *     'https://agent.example.com',
+ *     ['https://secure-agent.example.com', new ClientFactory({
  *       transports: [
  *         new JsonRpcTransportFactory({ fetchImpl: authFetch }),
  *         new RestTransportFactory({ fetchImpl: authFetch }),
  *       ],
  *       cardResolver: new DefaultAgentCardResolver({ fetchImpl: authFetch }),
- *     }),
- *   },
+ *     })],
+ *   ],
  * })
  * const agent = new Agent({ model, tools: [a2aClient] })
  * ```
@@ -60,7 +66,7 @@ export const DEFAULT_A2A_CLIENT_DESCRIPTION =
 export interface MakeA2AClientOptions {
   name?: string
   description?: string
-  allowedEndpoints: Record<string, ClientFactoryType | undefined>
+  allowedEndpoints: EndpointEntry[]
   maxBytes?: number
 }
 
@@ -70,8 +76,7 @@ export interface MakeA2AClientOptions {
  * A fresh A2AAgent is constructed on every call (stateless).
  */
 export function makeA2AClient(options: MakeA2AClientOptions): ReturnType<typeof tool> {
-  const endpoints = Object.keys(options.allowedEndpoints)
-  if (endpoints.length === 0) {
+  if (options.allowedEndpoints.length === 0) {
     throw new Error('allowedEndpoints must contain at least one endpoint')
   }
 
@@ -79,6 +84,9 @@ export function makeA2AClient(options: MakeA2AClientOptions): ReturnType<typeof 
   if (!Number.isInteger(maxBytes) || maxBytes <= 0) {
     throw new Error(`maxBytes must be a positive integer, got ${String(maxBytes)}`)
   }
+
+  const endpointsMap = normalizeEndpoints(options.allowedEndpoints)
+  const endpoints = Object.keys(endpointsMap)
 
   const description =
     options.description ?? `${DEFAULT_A2A_CLIENT_DESCRIPTION} Permitted endpoints: ${[...endpoints].sort().join(', ')}.`
@@ -90,14 +98,14 @@ export function makeA2AClient(options: MakeA2AClientOptions): ReturnType<typeof 
     callback: async (input) => {
       const { operation, endpoint, message } = input
 
-      if (!Object.hasOwn(options.allowedEndpoints, endpoint)) {
+      if (!Object.hasOwn(endpointsMap, endpoint)) {
         throw new Error(
           `Endpoint '${endpoint}' is not in the allowed endpoints list. ` +
             `Permitted endpoints: ${[...endpoints].sort().join(', ')}`
         )
       }
 
-      const clientFactory = options.allowedEndpoints[endpoint]
+      const clientFactory = endpointsMap[endpoint]
       const agent = new A2AAgent({
         url: endpoint,
         ...(clientFactory !== undefined ? { clientFactory } : {}),
@@ -117,6 +125,20 @@ export function makeA2AClient(options: MakeA2AClientOptions): ReturnType<typeof 
       throw new Error(`Unknown operation: '${String(operation)}'`)
     },
   })
+}
+
+function normalizeEndpoints(entries: EndpointEntry[]): Record<string, ClientFactoryType | undefined> {
+  const result: Record<string, ClientFactoryType | undefined> = {}
+  for (const entry of entries) {
+    if (typeof entry === 'string') {
+      result[entry] = undefined
+    } else if (Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string') {
+      result[entry[0]] = entry[1]
+    } else {
+      throw new Error(`Each endpoint entry must be a string or [string, ClientFactory] tuple`)
+    }
+  }
+  return result
 }
 
 async function handleDiscover(agent: A2AAgent, maxBytes: number): Promise<AgentCard> {

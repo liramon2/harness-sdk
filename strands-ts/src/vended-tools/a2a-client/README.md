@@ -30,18 +30,21 @@ const authFetch = createAuthenticatingFetchWithRetry(fetch, {
 })
 
 const a2aClient = makeA2AClient({
-  allowedEndpoints: {
+  allowedEndpoints: [
     // No auth needed
-    'https://agent.example.com': undefined,
+    'https://agent.example.com',
     // Custom ClientFactory for authenticated requests
-    'https://secure-agent.example.com': new ClientFactory({
-      transports: [
-        new JsonRpcTransportFactory({ fetchImpl: authFetch }),
-        new RestTransportFactory({ fetchImpl: authFetch }),
-      ],
-      cardResolver: new DefaultAgentCardResolver({ fetchImpl: authFetch }),
-    }),
-  },
+    [
+      'https://secure-agent.example.com',
+      new ClientFactory({
+        transports: [
+          new JsonRpcTransportFactory({ fetchImpl: authFetch }),
+          new RestTransportFactory({ fetchImpl: authFetch }),
+        ],
+        cardResolver: new DefaultAgentCardResolver({ fetchImpl: authFetch }),
+      }),
+    ],
+  ],
 })
 
 const agent = new Agent({
