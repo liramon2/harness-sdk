@@ -272,8 +272,8 @@ class FileStorage:
     async def retrieve(self, reference: str) -> tuple[bytes, str]:
         """Retrieve content from a stored file.
 
-        Accepts full paths (as returned by ``store()``), bare filenames,
-        and filename stems (without extension) for backward compatibility.
+        Accepts bare filenames (as returned by ``store()``), full paths
+        (for older references), and filename stems for backward compatibility.
 
         Args:
             reference: The file path, filename, or stem returned by store().
