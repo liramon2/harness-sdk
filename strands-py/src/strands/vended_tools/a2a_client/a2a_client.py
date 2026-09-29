@@ -1,7 +1,7 @@
 """A2A client tool for communicating with remote A2A-protocol agents.
 
 Provides :func:`make_a2a_client`, a factory that requires an explicit list of
-permitted endpoints (with optional :class:`~a2a.client.ClientConfig`), plus optional size limits.
+permitted endpoints (with optional :class:`~a2a.client.ClientConfig`).
 
 The tool is a stateless shim over :class:`~strands.agent.a2a_agent.A2AAgent`.
 A fresh ``A2AAgent`` is constructed on every call so the tool carries no session
@@ -12,7 +12,6 @@ state between invocations.  Each endpoint may carry its own
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 try:
@@ -48,7 +47,7 @@ def make_a2a_client(
     *,
     name: str = "a2a_client",
     description: str | None = None,
-    allowed_endpoints: Sequence[AllowedEndpoint],
+    allowed_endpoints: list[AllowedEndpoint],
 ) -> DecoratedFunctionTool:
     """Create an A2A client tool.
 
@@ -67,6 +66,14 @@ def make_a2a_client(
     """
     if not allowed_endpoints:
         raise ValueError("allowed_endpoints must contain at least one endpoint")
+
+    for entry in allowed_endpoints:
+        if isinstance(entry, str):
+            continue
+        if not isinstance(entry, tuple) or len(entry) != 2 or not isinstance(entry[0], str):
+            raise TypeError(
+                f"Each allowed endpoint must be a string URL or (str, ClientConfig) tuple, got {type(entry).__name__}"
+            )
 
     endpoints_map = _normalize_endpoints(allowed_endpoints)
 
@@ -119,7 +126,7 @@ def make_a2a_client(
     return a2a_client_tool
 
 
-def _normalize_endpoints(entries: Sequence[AllowedEndpoint]) -> dict[str, ClientConfig | None]:
+def _normalize_endpoints(entries: list[AllowedEndpoint]) -> dict[str, ClientConfig | None]:
     """Convert the user-facing list into an internal ``{url: config}`` mapping."""
     result: dict[str, ClientConfig | None] = {}
     for entry in entries:

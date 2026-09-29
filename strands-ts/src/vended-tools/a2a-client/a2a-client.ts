@@ -26,7 +26,7 @@ const a2aClientInputSchema = z.object({
  * A single endpoint entry: either a bare URL string, or a
  * `[url, ClientFactory]` tuple for endpoints that need custom configuration.
  */
-export type EndpointEntry = string | [string, ClientFactoryType]
+type EndpointEntry = string | [string, ClientFactoryType]
 
 /**
  * Default description shown to the model for the A2A client tool.

@@ -18,7 +18,7 @@ and is imported lazily, so accessing it without that extra raises :class:`Import
 
 The :func:`make_a2a_client` factory creates a tool that discovers and sends messages to remote A2A-protocol
 agents. Supply the required ``allowed_endpoints`` list — each entry is either a bare URL string or a
-``(url, ClientConfig)`` tuple — plus optional size limits.
+``(url, ClientConfig)`` tuple.
 It requires the optional ``a2a`` extra (``pip install 'strands-agents[a2a]'``)
 and is imported lazily, so accessing it without that extra raises :class:`ImportError`.
 

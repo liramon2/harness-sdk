@@ -148,6 +148,14 @@ class TestFactory:
         with pytest.raises(ValueError, match="allowed_endpoints must contain at least one endpoint"):
             make_a2a_client(allowed_endpoints=[])
 
+    def test_non_string_endpoint_raises(self):
+        with pytest.raises(TypeError, match="Each allowed endpoint must be a string URL"):
+            make_a2a_client(allowed_endpoints=[123])
+
+    def test_non_string_tuple_endpoint_raises(self):
+        with pytest.raises(TypeError, match="Each allowed endpoint must be a string URL"):
+            make_a2a_client(allowed_endpoints=[(123, ClientConfig())])
+
     def test_custom_name(self):
         tool = make_a2a_client(name="my_agent", allowed_endpoints=_ENDPOINTS)
         assert tool.tool_name == "my_agent"
