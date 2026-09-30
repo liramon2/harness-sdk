@@ -3,12 +3,11 @@ title: Bidirectional Streaming Hooks
 description: 'Extend BidiAgent with hooks for bidirectional streaming events: connection lifecycle, barge-ins, restarts, and real-time conversation logging.'
 sidebar:
   label: "Hooks"
-experimental: true
 tags: [bidi-streaming, hooks]
 sourceLinks:
-  - path: strands-py/src/strands/experimental/bidi/hooks/events.py
-  - path: strands-py/src/strands/experimental/bidi/agent/agent.py
-  - path: strands-py/src/strands/experimental/bidi/agent/loop.py
+  - path: strands-py/src/strands/bidi/hooks/events.py
+  - path: strands-py/src/strands/bidi/agent/agent.py
+  - path: strands-py/src/strands/bidi/agent/loop.py
   - path: strands-py/src/strands/hooks/events.py
   - path: strands-py/src/strands/types/agent.py
 ---
@@ -42,8 +41,8 @@ Register related hooks together by implementing `register_hooks()`:
 
 ```python
 from strands import LocalAgent
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.hooks import BidiAgentStopEvent, BidiResponseCompleteEvent
+from strands.bidi.agent import BidiAgent
+from strands.bidi.hooks import BidiAgentStopEvent, BidiResponseStopEvent
 from strands.hooks import AgentInitializedEvent, HookRegistry, MessageAddedEvent
 
 
@@ -51,7 +50,7 @@ class ConversationLogger:
     def register_hooks(self, registry: HookRegistry) -> None:
         registry.add_callback(AgentInitializedEvent, self.on_initialized)
         registry.add_callback(MessageAddedEvent, self.on_message_added)
-        registry.add_callback(BidiResponseCompleteEvent, self.on_response_complete)
+        registry.add_callback(BidiResponseStopEvent, self.on_response_stop)
         registry.add_callback(BidiAgentStopEvent, self.on_stop)
 
     def on_initialized(self, event: AgentInitializedEvent[LocalAgent]) -> None:
@@ -60,8 +59,8 @@ class ConversationLogger:
     async def on_message_added(self, event: MessageAddedEvent[LocalAgent]) -> None:
         print(f"{event.message['role']}: {event.message['content']}")
 
-    async def on_response_complete(self, event: BidiResponseCompleteEvent) -> None:
-        print(f"Response {event.response_id} ended: {event.stop_reason}")
+    async def on_response_stop(self, event: BidiResponseStopEvent) -> None:
+        print(f"Response {event.response_id} ended")
 
     async def on_stop(self, event: BidiAgentStopEvent) -> None:
         print(f"Agent {event.agent.name} stopped")
@@ -79,7 +78,7 @@ Register a single hook with `add_hook()`, which infers the event type:
 
 ```python
 from strands import LocalAgent
-from strands.experimental.bidi.agent import BidiAgent
+from strands.bidi.agent import BidiAgent
 from strands.hooks import MessageAddedEvent
 
 
@@ -97,6 +96,21 @@ shared hooks with `AgentInitializedEvent[LocalAgent]` or
 that need bidi-specific methods. Unparameterized annotations retain `Agent` as
 their default agent type.
 
+To observe completed transcripts, subscribe to `MessageUpdatedEvent`. A transcript first appears as an empty message through `MessageAddedEvent` when the transcript starts. Its completion replaces that message at the reserved position. `event.tracking_id` identifies the message and `event.message` contains the replacement.
+
+```python
+from strands.bidi.agent import BidiAgent
+from strands.hooks import MessageUpdatedEvent
+
+
+async def log_update(event: MessageUpdatedEvent[BidiAgent]) -> None:
+    print(f"Message {event.tracking_id} updated: {event.message}")
+
+
+agent = BidiAgent()
+agent.add_hook(log_update)
+```
+
 ### Shared tool call hooks
 
 `BidiAgent` uses the same `BeforeToolCallEvent` and `AfterToolCallEvent` types as
@@ -105,7 +119,7 @@ for their agent type:
 
 ```python
 from strands import LocalAgent, ToolContext, tool
-from strands.experimental.bidi.agent import BidiAgent
+from strands.bidi.agent import BidiAgent
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
 
 
@@ -142,7 +156,7 @@ flowchart TB
     Init[AgentInitializedEvent] --> Start[agent.start]
     Start --> Running[Active conversation]
     Running --> Message[MessageAddedEvent]
-    Running --> Response[BidiResponseCompleteEvent]
+    Running --> Response[BidiResponseStopEvent]
     Running --> BargeIn[BidiBargeInEvent]
     Running --> Tools[BeforeToolCallEvent / AfterToolCallEvent]
     Running --> BeforeRestart[BidiBeforeConnectionRestartEvent]
@@ -163,8 +177,9 @@ Choose hooks according to the boundary you need to observe:
 |-------|--------|
 | `AgentInitializedEvent` | After agent construction; synchronous hooks only |
 | `MessageAddedEvent` | After the framework adds a message to conversation history |
+| `MessageUpdatedEvent` | After the framework replaces a message |
 | `BidiAgentStopEvent` | After attempting task and model cleanup, including failures |
-| `BidiResponseCompleteEvent` | When the model reports that a response ended |
+| `BidiResponseStopEvent` | When the model reports that a response ended |
 | `BeforeToolCallEvent` | Before executing a tool |
 | `AfterToolCallEvent` | After tool execution; reverse callback ordering |
 | `BidiBargeInEvent` | When the model reports a barge-in |
@@ -174,14 +189,14 @@ Choose hooks according to the boundary you need to observe:
 `BidiAgentStopEvent` carries `agent` and uses reverse callback ordering for cleanup.
 The session manager uses this event for its final state sync.
 
-`BidiResponseCompleteEvent` carries `agent`, `response_id`, and `stop_reason`.
-Hooks run in registration order and finish before the corresponding streaming event
-reaches the consumer. The hook mirrors model-reported completion: shutdown or a
-connection failure without a completion event does not emit it.
+`BidiResponseStopEvent` carries `agent` and `response_id`. Hooks run in registration
+order and finish before the corresponding streaming event reaches the consumer.
+The hook mirrors model-reported completion: shutdown or a connection failure without
+a stop event does not emit it.
 
 The hook and streaming event share a name but are separate classes. Import the hook
-from `strands.experimental.bidi.hooks`. Import the streaming event from
-`strands.experimental.bidi.types` when handling `agent.receive()` output.
+from `strands.bidi.hooks`. Import the streaming event from
+`strands.bidi.types` when handling `agent.receive()` output.
 
 ## Cookbook
 
@@ -189,11 +204,11 @@ This section contains practical hook implementations for common use cases.
 
 ### Tracking barge-ins
 
-Count barge-ins and record their reasons:
+Count barge-ins:
 
 ```python
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.hooks import BidiBargeInEvent
+from strands.bidi.agent import BidiAgent
+from strands.bidi.hooks import BidiBargeInEvent
 from strands.hooks import HookRegistry
 
 
@@ -206,7 +221,7 @@ class BargeInTracker:
 
     async def on_barge_in(self, event: BidiBargeInEvent) -> None:
         self.barge_in_count += 1
-        print(f"Barge-in #{self.barge_in_count}: {event.reason}")
+        print(f"Barge-in #{self.barge_in_count}")
 
 
 tracker = BargeInTracker()
@@ -218,8 +233,8 @@ agent = BidiAgent(hooks=[tracker])
 Track connection restart attempts and their outcomes:
 
 ```python
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.hooks import (
+from strands.bidi.agent import BidiAgent
+from strands.bidi.hooks import (
     BidiAfterConnectionRestartEvent,
     BidiBeforeConnectionRestartEvent,
 )
@@ -253,8 +268,8 @@ agent = BidiAgent(hooks=[ConnectionMonitor()])
 Count model-reported response completions and report the total when the agent stops:
 
 ```python
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.hooks import BidiAgentStopEvent, BidiResponseCompleteEvent
+from strands.bidi.agent import BidiAgent
+from strands.bidi.hooks import BidiAgentStopEvent, BidiResponseStopEvent
 from strands.hooks import HookRegistry
 
 
@@ -263,12 +278,12 @@ class ConversationAnalytics:
         self.response_count = 0
 
     def register_hooks(self, registry: HookRegistry) -> None:
-        registry.add_callback(BidiResponseCompleteEvent, self.on_response_complete)
+        registry.add_callback(BidiResponseStopEvent, self.on_response_stop)
         registry.add_callback(BidiAgentStopEvent, self.on_stop)
 
-    async def on_response_complete(self, event: BidiResponseCompleteEvent) -> None:
+    async def on_response_stop(self, event: BidiResponseStopEvent) -> None:
         self.response_count += 1
-        print(f"Response {event.response_id}: {event.stop_reason}")
+        print(f"Response {event.response_id} ended")
 
     async def on_stop(self, event: BidiAgentStopEvent) -> None:
         print(f"Agent {event.agent.agent_id}: {self.response_count} responses ended")
@@ -276,12 +291,6 @@ class ConversationAnalytics:
 
 agent = BidiAgent(hooks=[ConversationAnalytics()])
 ```
-
-### Session persistence
-
-Use `FileSessionManager` or `S3SessionManager` to persist messages and state. They
-register shared initialization and message-added hooks, plus `BidiAgentStopEvent`
-for the final sync. See [Session Management](session-management.md).
 
 ## Accessing invocation state
 
@@ -291,7 +300,7 @@ across connection restarts. Changes made by any of them are visible to the other
 
 ```python
 from strands import LocalAgent, tool
-from strands.experimental.bidi.agent import BidiAgent
+from strands.bidi.agent import BidiAgent
 from strands.hooks import BeforeToolCallEvent
 
 
@@ -327,6 +336,5 @@ For more guidance on performance, errors, and composition, see the
 ## Next steps
 
 - [Agent](agent.md) - Learn about BidiAgent configuration and lifecycle
-- [Session Management](session-management.md) - Persist conversations across sessions
 - [Events](events.md) - Complete guide to bidirectional streaming events
-- [Python API Reference](@api/python/strands.experimental.bidi.agent) - Complete API documentation
+- [Python API Reference](@api/python/strands.bidi.agent) - Complete API documentation
