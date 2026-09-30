@@ -1294,7 +1294,120 @@ async def test_stream_request_with_gemini_tools_and_function_tools(gemini_client
                     ]
                 },
                 {"code_execution": {}},
-            ]
+            ],
+            "tool_config": {"include_server_side_tool_invocations": True},
+        },
+        "contents": [{"parts": [{"text": "test"}], "role": "user"}],
+        "model": model_id,
+    }
+    gemini_client.aio.models.generate_content_stream.assert_called_with(**exp_request)
+
+
+@pytest.mark.parametrize(
+    ("tool_choice", "exp_tool_config"),
+    [
+        (None, {"include_server_side_tool_invocations": True}),
+        ({"auto": {}}, {"function_calling_config": {"mode": "AUTO"}, "include_server_side_tool_invocations": True}),
+    ],
+    ids=["no-choice", "auto"],
+)
+@pytest.mark.asyncio
+async def test_stream_gemini_tools_sets_server_side_flag(
+    gemini_client, messages, tool_spec, model_id, tool_choice, exp_tool_config
+):
+    google_search_tool = genai.types.Tool(google_search=genai.types.GoogleSearch())
+    model = GeminiModel(model_id=model_id, gemini_tools=[google_search_tool])
+
+    await anext(model.stream(messages, tool_specs=[tool_spec], tool_choice=tool_choice))
+
+    exp_request = {
+        "config": {
+            "tools": [
+                {
+                    "function_declarations": [
+                        {
+                            "description": tool_spec["description"],
+                            "name": tool_spec["name"],
+                            "parameters_json_schema": tool_spec["inputSchema"]["json"],
+                        }
+                    ]
+                },
+                {"google_search": {}},
+            ],
+            "tool_config": exp_tool_config,
+        },
+        "contents": [{"parts": [{"text": "test"}], "role": "user"}],
+        "model": model_id,
+    }
+    gemini_client.aio.models.generate_content_stream.assert_called_with(**exp_request)
+
+
+@pytest.mark.asyncio
+async def test_stream_gemini_tools_flag_skipped_on_vertex_ai(gemini_client, messages, tool_spec, model_id):
+    """Vertex AI does not support include_server_side_tool_invocations, so the flag is omitted."""
+    google_search_tool = genai.types.Tool(google_search=genai.types.GoogleSearch())
+    model = GeminiModel(
+        model_id=model_id,
+        gemini_tools=[google_search_tool],
+        client_args={"api_key": "fake", "vertexai": True},
+    )
+
+    await anext(model.stream(messages, tool_specs=[tool_spec]))
+
+    exp_request = {
+        "config": {
+            "tools": [
+                {
+                    "function_declarations": [
+                        {
+                            "description": tool_spec["description"],
+                            "name": tool_spec["name"],
+                            "parameters_json_schema": tool_spec["inputSchema"]["json"],
+                        }
+                    ]
+                },
+                {"google_search": {}},
+            ],
+        },
+        "contents": [{"parts": [{"text": "test"}], "role": "user"}],
+        "model": model_id,
+    }
+    gemini_client.aio.models.generate_content_stream.assert_called_with(**exp_request)
+
+
+@pytest.mark.asyncio
+async def test_stream_gemini_tools_flag_skipped_when_params_owns_tool_config(
+    gemini_client, messages, tool_spec, model_id
+):
+    """An explicit tool_config in params is not overwritten — the caller owns it."""
+    google_search_tool = genai.types.Tool(google_search=genai.types.GoogleSearch())
+    custom_tool_config = {
+        "function_calling_config": {"mode": "NONE"},
+        "include_server_side_tool_invocations": False,
+    }
+    model = GeminiModel(
+        model_id=model_id,
+        gemini_tools=[google_search_tool],
+        params={"tool_config": custom_tool_config},
+    )
+
+    await anext(model.stream(messages, tool_specs=[tool_spec]))
+
+    exp_request = {
+        "config": {
+            "tools": [
+                {
+                    "function_declarations": [
+                        {
+                            "description": tool_spec["description"],
+                            "name": tool_spec["name"],
+                            "parameters_json_schema": tool_spec["inputSchema"]["json"],
+                        }
+                    ]
+                },
+                {"google_search": {}},
+            ],
+            "tool_config": custom_tool_config,
         },
         "contents": [{"parts": [{"text": "test"}], "role": "user"}],
         "model": model_id,

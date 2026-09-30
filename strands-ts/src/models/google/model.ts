@@ -341,6 +341,15 @@ export class GoogleModel extends Model<GoogleModelConfig> {
         config.tools = []
       }
       config.tools.push(...this._config.builtInTools)
+
+      // Gemini Developer API requires this flag when mixing function declarations with built-in tools.
+      const needsServerSideFlag = options?.toolSpecs && options.toolSpecs.length > 0 && !this._client.vertexai
+      if (needsServerSideFlag) {
+        config.toolConfig = {
+          ...config.toolConfig,
+          includeServerSideToolInvocations: true,
+        }
+      }
     }
 
     // Spread params object for forward compatibility
