@@ -947,7 +947,9 @@ class Graph(MultiAgentBase):
         """Find nodes that became ready after the last execution.
 
         Only evaluates destination nodes of outbound edges from the completed batch,
-        instead of iterating over all nodes in the graph.
+        instead of iterating over all nodes in the graph.  Failed nodes (e.g. a
+        cancelled agent) are excluded so they cannot nominate successors — their
+        downstream branch is pruned while sibling branches continue.
         """
         # Strip failed/cancelled nodes so their outgoing edges are never walked.
         completed_batch = [node for node in completed_batch if node.execution_status != Status.FAILED]

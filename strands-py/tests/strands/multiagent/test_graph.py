@@ -2099,10 +2099,44 @@ async def test_graph_cancelled_node_does_not_overwrite_interrupted_status(
     builder.set_entry_point("interrupting")
     graph = builder.build()
 
+    # First invocation: INTERRUPTED must win over FAILED
     result = graph("Test cancelled+interrupted batch")
 
     assert result.status == Status.INTERRUPTED
     assert result.interrupts == exp_interrupts
+
+    # Resume: cancellation is deferred, not dropped — graph finalises to FAILED
+    interrupt = result.interrupts[0]
+    interrupting_agent.stream_async = Mock()
+    interrupting_agent.stream_async.return_value = agenerator(
+        [
+            {
+                "result": AgentResult(
+                    message={"role": "assistant", "content": [{"text": "Resumed"}]},
+                    stop_reason="end_turn",
+                    state={},
+                    metrics=None,
+                ),
+            },
+        ],
+    )
+    graph._interrupt_state.context["interrupting"] = {
+        "from_hook": False,
+        "interrupt_ids": [interrupt.id],
+        "interrupt_state": {
+            "activated": True,
+            "context": {},
+            "interrupts": {interrupt.id: interrupt.to_dict()},
+        },
+        "messages": [],
+        "state": {},
+        "model_state": {},
+    }
+
+    responses = [{"interruptResponse": {"interruptId": interrupt.id, "response": "go"}}]
+    result = graph(responses)
+
+    assert result.status == Status.FAILED
 
 
 @pytest.mark.asyncio
