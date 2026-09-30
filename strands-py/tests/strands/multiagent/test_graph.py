@@ -2067,6 +2067,45 @@ async def test_graph_cancelled_node_does_not_poison_parallel_batch(mock_strands_
 
 
 @pytest.mark.asyncio
+async def test_graph_cancelled_node_does_not_overwrite_interrupted_status(
+    mock_strands_tracer, mock_use_span, agenerator
+):
+    """In a parallel batch, a cancelled node must not overwrite INTERRUPTED with FAILED."""
+    cancelled_agent = create_mock_agent("cancelled_agent", "Cancelled")
+    cancelled_agent.return_value.stop_reason = "cancelled"
+
+    exp_interrupts = [Interrupt(id="i1", name="test", reason="needs input")]
+    interrupting_agent = create_mock_agent("interrupting_agent", "Interrupted")
+    interrupting_agent.stream_async = Mock()
+    interrupting_agent.stream_async.return_value = agenerator(
+        [
+            {
+                "result": AgentResult(
+                    message={},
+                    stop_reason="interrupt",
+                    state={},
+                    metrics=None,
+                    interrupts=exp_interrupts,
+                ),
+            },
+        ],
+    )
+
+    builder = GraphBuilder()
+    builder.add_node(cancelled_agent, "cancelled")
+    builder.add_node(interrupting_agent, "interrupting")
+    builder.add_edge("cancelled", "interrupting")
+    builder.set_entry_point("cancelled")
+    builder.set_entry_point("interrupting")
+    graph = builder.build()
+
+    result = graph("Test cancelled+interrupted batch")
+
+    assert result.status == Status.INTERRUPTED
+    assert result.interrupts == exp_interrupts
+
+
+@pytest.mark.asyncio
 async def test_graph_persisted(mock_strands_tracer, mock_use_span):
     """Test graph persistence functionality with multimodal input containing binary bytes."""
     import base64
