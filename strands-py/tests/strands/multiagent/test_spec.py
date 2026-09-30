@@ -64,11 +64,14 @@ def test_resolve_spec_preset_applied_by_default():
         "presets": {"g": Preset(instructions="help", context="all", last_messages=5)},
         "default_preset": "g",
     }
-    spec = resolve_spec({"task": "x"}, **axes)
-    assert spec.agent_type == "g"
-    assert spec.instructions == "help"
-    assert spec.context == "all"
-    assert spec.last_messages == 5
+    assert resolve_spec({"task": "x"}, **axes) == AgentSpec(
+        task="x",
+        agent_type="g",
+        instructions="help",
+        tools=["read", "shell"],
+        context="all",
+        last_messages=5,
+    )
 
 
 def test_resolve_spec_unknown_agent_type_raises():
@@ -83,21 +86,31 @@ def test_resolve_spec_agent_type_rejects_prototype_keys_null_and_non_strings():
         with pytest.raises(ValueError, match="Unknown agent_type"):
             resolve_spec({"task": "x", "agent_type": bad}, **axes)
     # null (None) falls back to default preset instead of throwing
-    spec = resolve_spec({"task": "x", "agent_type": None}, **axes)
-    assert spec.agent_type == "g"
+    assert resolve_spec({"task": "x", "agent_type": None}, **axes) == AgentSpec(
+        task="x",
+        agent_type="g",
+        tools=["read", "shell"],
+        context="none",
+    )
 
 
 def test_resolve_spec_ad_hoc_instructions_suppress_default_preset():
     axes = {**_AXES, "presets": {"g": Preset(instructions="default")}, "default_preset": "g"}
-    spec = resolve_spec({"task": "x", "instructions": "ad-hoc"}, **axes)
-    assert spec.agent_type is None
-    assert spec.instructions == "ad-hoc"
+    assert resolve_spec({"task": "x", "instructions": "ad-hoc"}, **axes) == AgentSpec(
+        task="x",
+        instructions="ad-hoc",
+        tools=["read", "shell"],
+        context="none",
+    )
 
 
 def test_resolve_spec_tools_clamped_and_last_messages_parsed():
-    spec = resolve_spec({"task": "x", "tools": ["read", "write"], "last_messages": "3"}, **_AXES)
-    assert spec.tools == ["read"]
-    assert spec.last_messages == 3
+    assert resolve_spec({"task": "x", "tools": ["read", "write"], "last_messages": "3"}, **_AXES) == AgentSpec(
+        task="x",
+        tools=["read"],
+        last_messages=3,
+        context="none",
+    )
 
 
 def test_resolve_spec_invalid_last_messages_becomes_none():
@@ -106,7 +119,12 @@ def test_resolve_spec_invalid_last_messages_becomes_none():
 
 def test_resolve_spec_fixed_ignores_model_value():
     axes = {**_AXES, "instructions": Fixed("pinned")}
-    assert resolve_spec({"task": "x", "instructions": "override"}, **axes).instructions == "pinned"
+    assert resolve_spec({"task": "x", "instructions": "override"}, **axes) == AgentSpec(
+        task="x",
+        instructions="pinned",
+        tools=["read", "shell"],
+        context="none",
+    )
 
 
 def test_resolve_spec_choice_maps_option_value():
@@ -152,24 +170,37 @@ def test_fixed_is_frozen():
 
 
 def test_resolve_spec_preset_tools_clamped_to_choice():
-    """Covers _resolve_list preset-with-allowed-values branch (spec.py 191-194)."""
+    """Covers _resolve_list preset-with-allowed-values branch."""
     axes = {
         **_AXES,
         "presets": {"worker": Preset(tools=["read", "write"])},
         "default_preset": "worker",
         "tools": Choice(["read", "shell"], multiple=True),
     }
-    spec = resolve_spec({"task": "x"}, **axes)
-    assert spec.tools == ["read"]  # "write" not in Choice, filtered out
+    assert resolve_spec({"task": "x"}, **axes) == AgentSpec(
+        task="x",
+        agent_type="worker",
+        tools=["read"],
+        context="none",
+    )
 
 
 def test_resolve_spec_fixed_tools_list():
-    """Covers _resolve_list Fixed-list branch (spec.py 199)."""
+    """Covers _resolve_list Fixed-list branch."""
     axes = {**_AXES, "tools": Fixed(["a", "b"])}
-    assert resolve_spec({"task": "x"}, **axes).tools == ["a", "b"]
+    assert resolve_spec({"task": "x"}, **axes) == AgentSpec(
+        task="x",
+        tools=["a", "b"],
+        context="none",
+    )
 
 
 def test_resolve_spec_fixed_empty_list_is_not_none():
     """Fixed([]) must resolve to [] (no tools), not None (inherit all)."""
     axes = {**_AXES, "mcp_servers": Fixed([])}
-    assert resolve_spec({"task": "x"}, **axes).mcp_servers == []
+    assert resolve_spec({"task": "x"}, **axes) == AgentSpec(
+        task="x",
+        mcp_servers=[],
+        tools=["read", "shell"],
+        context="none",
+    )

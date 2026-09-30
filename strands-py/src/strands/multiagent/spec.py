@@ -57,12 +57,7 @@ class Open:
 
 @dataclass(frozen=True)
 class Option:
-    """One selectable option.
-
-    ``name`` is what the model picks (the enum entry and the key we map back on); ``value`` is what
-    that choice resolves to, defaulting to ``name`` so a string-valued axis needs only a name.
-    ``description`` guides the model.
-    """
+    """A selectable entry in a ``Choice``."""
 
     name: str
     value: Any = _UNSET
@@ -71,16 +66,10 @@ class Option:
 
 @dataclass(frozen=True)
 class Choice:
-    """The model picks from a developer-supplied set by ``name``.
+    """The model picks from a developer-supplied set.
 
-    The axis contributes an enum parameter, or an ``array`` of enum when ``multiple`` is set
-    (letting the model pick several).
-
-    Each entry in ``options`` is a bare name or an ``Option(name, value=name, description="")``. The
-    picked name maps back to the option's ``value``; descriptions render into the parameter's
-    ``description`` (JSON Schema has no per-enum-value doc), the same way ``Preset`` descriptions
-    surface under ``agent_type``. For ``tools`` the chosen set is re-validated at call time, so a
-    delegate can never exceed the parent's tools.
+    Each entry is a bare name or an ``Option``. Set ``multiple=True`` to let the model
+    pick more than one.
     """
 
     options: Sequence[str | Option]
@@ -89,12 +78,12 @@ class Choice:
     def normalized(self) -> list[Option]:
         """The options as ``Option``s with ``value`` resolved, wrapping any bare name."""
         result = []
-        for o in self.options:
-            if isinstance(o, Option):
+        for entry in self.options:
+            if isinstance(entry, Option):
                 # Fill in value from name when it was left unset.
-                result.append(o if o.value is not _UNSET else Option(o.name, o.name, o.description))
+                result.append(entry if entry.value is not _UNSET else Option(entry.name, entry.name, entry.description))
             else:
-                name = str(o)
+                name = str(entry)
                 result.append(Option(name, name))
         return result
 
@@ -105,8 +94,8 @@ class Choice:
         descriptions folded into the property's ``description``.
         """
         options = self.normalized()
-        values = [o.name for o in options]
-        lines = [f"- {o.name}: {o.description}" for o in options if o.description]
+        values = [option.name for option in options]
+        lines = [f"- {option.name}: {option.description}" for option in options if option.description]
         desc = description
         if lines:
             block = "Options:\n" + "\n".join(lines)
@@ -121,10 +110,10 @@ class Choice:
         return prop
 
     def value_for(self, name: str) -> Any:
-        """The resolved value behind ``name``, or ``name`` itself if unknown (passthrough)."""
-        for o in self.normalized():
-            if o.name == name:
-                return o.value
+        """The resolved value behind ``name``, or ``name`` itself if unknown."""
+        for option in self.normalized():
+            if option.name == name:
+                return option.value
         return name
 
 
@@ -164,7 +153,7 @@ def _resolve_scalar(
     if model_value is not _UNSET:
         if isinstance(axis, Open):
             return model_value
-        if isinstance(axis, Choice) and any(o.name == model_value for o in axis.normalized()):
+        if isinstance(axis, Choice) and any(option.name == model_value for option in axis.normalized()):
             return axis.value_for(model_value)
     if preset_value is not None:
         return preset_value
@@ -182,7 +171,7 @@ def _resolve_list(
 
     When the axis is a Choice, ignores values that are not valid options.
     """
-    allowed = [o.name for o in axis.normalized()] if isinstance(axis, Choice) else None
+    allowed = [option.name for option in axis.normalized()] if isinstance(axis, Choice) else None
 
     # Model-supplied value
     if model_value is not _UNSET and allowed is not None:
@@ -193,17 +182,17 @@ def _resolve_list(
             requested = model_value
         else:
             requested = []
-        return [axis.value_for(t) for t in requested if t in allowed]
+        return [axis.value_for(tool_name) for tool_name in requested if tool_name in allowed]
     # Preset value
     if preset_values is not None:
         if allowed is not None:
             assert isinstance(axis, Choice)
-            allowed_values = {axis.value_for(n) for n in allowed}
-            return [t for t in preset_values if t in allowed_values]
+            allowed_values = {axis.value_for(name) for name in allowed}
+            return [tool_name for tool_name in preset_values if tool_name in allowed_values]
         return list(preset_values)
     # All choices
     if isinstance(axis, Choice) and axis.multiple and allowed is not None:
-        return [axis.value_for(n) for n in allowed]
+        return [axis.value_for(name) for name in allowed]
     if isinstance(axis, Fixed):
         return list(axis.value) if axis.value is not None else None
     return None
@@ -224,7 +213,7 @@ def resolve_spec(
 
     Precedence per axis: a model-supplied argument wins, then the preset's value, then the axis
     default (``Fixed``/``Inherit``). An omitted ``agent_type`` falls back to the default preset, so
-    a bare ``subagent(task=...)`` behaves like the default role.
+    a bare model input behaves like the default role.
 
     Args:
         model_input: The model-supplied arguments.
@@ -235,6 +224,9 @@ def resolve_spec(
         mcp_servers: Axis policy for MCP server selection. Defaults to ``Inherit()`` when not supplied.
         model: Axis policy for model selection. Defaults to ``Inherit()`` when not supplied.
         context: Axis policy for context sharing. Defaults to ``Fixed("none")`` when not supplied.
+
+    Raises:
+        ValueError: If ``agent_type`` is provided but not found in ``presets``.
     """
     if tools is None:
         tools = Inherit()
@@ -298,27 +290,27 @@ def default_builder(parent: Agent) -> AgentBuilder:
     def build(spec: AgentSpec) -> Agent:
         parent_tools: dict[str, Any] = {}
         mcp_clients: dict[str, MCPClient] = {}
-        for t in parent.tool_registry.registry.values() if parent else []:
-            if isinstance(t, MCPAgentTool):
+        for tool in parent.tool_registry.registry.values() if parent else []:
+            if isinstance(tool, MCPAgentTool):
                 # MCP tools flow through mcp_servers to avoid duplicates with their client.
-                if t.mcp_client.client_name is not None:
-                    mcp_clients.setdefault(t.mcp_client.client_name, t.mcp_client)
+                if tool.mcp_client.client_name is not None:
+                    mcp_clients.setdefault(tool.mcp_client.client_name, tool.mcp_client)
             else:
                 # Plain tools are selected by name via spec.tools.
-                parent_tools[t.tool_name] = t
+                parent_tools[tool.tool_name] = tool
 
         # tools=None means inherit all; a list means only those.
         child_tools: list[Any] = (
             list(parent_tools.values())
             if spec.tools is None
-            else [parent_tools[t] for t in spec.tools if t in parent_tools]
+            else [parent_tools[tool_name] for tool_name in spec.tools if tool_name in parent_tools]
         )
 
         # MCP servers: spec.mcp_servers=None means inherit all, a list means only those.
         selected = (
             mcp_clients
             if spec.mcp_servers is None
-            else {n: mcp_clients[n] for n in spec.mcp_servers if n in mcp_clients}
+            else {name: mcp_clients[name] for name in spec.mcp_servers if name in mcp_clients}
         )
         child_tools.extend(selected.values())
 

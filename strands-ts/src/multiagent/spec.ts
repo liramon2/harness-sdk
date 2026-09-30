@@ -39,9 +39,6 @@ export const UNSET: unique symbol = Symbol('UNSET')
 export class Fixed {
   readonly value: unknown
 
-  /**
-   * @param value - The pinned value.
-   */
   constructor(value: unknown = undefined) {
     this.value = value
     Object.freeze(this)
@@ -62,23 +59,12 @@ export class Open {
   }
 }
 
-/**
- * One selectable option inside a {@link Choice}.
- *
- * `name` is what the model picks (the enum entry and the key we map back on); `value` is what
- * that choice resolves to, defaulting to `name` so a string-valued axis needs only a name.
- * `description` guides the model.
- */
+/** A selectable entry in a {@link Choice}. */
 export class Option {
   readonly name: string
   readonly value: unknown
   readonly description: string
 
-  /**
-   * @param name - Model-facing label for this option.
-   * @param value - Resolved value; defaults to {@link UNSET}, filled from `name` by {@link Choice.normalized}.
-   * @param description - Guidance shown to the model.
-   */
   constructor(name: string, value: unknown = UNSET, description: string = '') {
     this.name = name
     this.value = value
@@ -88,16 +74,10 @@ export class Option {
 }
 
 /**
- * The model picks from a developer-supplied set by name.
+ * The model picks from a developer-supplied set.
  *
- * The axis contributes an enum parameter, or an `array` of enum when `multiple` is set
- * (letting the model pick several).
- *
- * Each entry in `options` is a bare name or an {@link Option}. The picked name maps back to
- * the option's `value`; descriptions render into the parameter's `description` (JSON Schema
- * has no per-enum-value doc), the same way {@link Preset} descriptions surface under
- * `agent_type`. For `tools` the chosen set is re-validated at call time, so a delegate can
- * never exceed the parent's tools.
+ * Each entry is a bare name or an {@link Option}. Set `multiple` to `true` to let the model
+ * pick more than one.
  */
 export class Choice {
   readonly options: readonly (string | Option)[]
@@ -120,11 +100,11 @@ export class Choice {
    */
   normalized(): Option[] {
     const result: Option[] = []
-    for (const o of this.options) {
-      if (o instanceof Option) {
-        result.push(o.value !== UNSET ? o : new Option(o.name, o.name, o.description))
+    for (const entry of this.options) {
+      if (entry instanceof Option) {
+        result.push(entry.value !== UNSET ? entry : new Option(entry.name, entry.name, entry.description))
       } else {
-        const name = String(o)
+        const name = String(entry)
         result.push(new Option(name, name))
       }
     }
@@ -142,8 +122,10 @@ export class Choice {
    */
   toSchemaProperty(description: string = ''): Record<string, unknown> {
     const options = this.normalized()
-    const values = options.map((o) => o.name)
-    const lines = options.filter((o) => o.description).map((o) => `- ${o.name}: ${o.description}`)
+    const values = options.map((option) => option.name)
+    const lines = options
+      .filter((option) => option.description)
+      .map((option) => `- ${option.name}: ${option.description}`)
     let desc = description
     if (lines.length > 0) {
       const block = 'Options:\n' + lines.join('\n')
@@ -165,9 +147,9 @@ export class Choice {
    * @returns The mapped value, or `name` when no matching option exists.
    */
   valueFor(name: string): unknown {
-    for (const o of this.normalized()) {
-      if (o.name === name) {
-        return o.value
+    for (const option of this.normalized()) {
+      if (option.name === name) {
+        return option.value
       }
     }
     return name
@@ -254,7 +236,7 @@ function resolveScalar(
 ): unknown {
   if (modelValue !== UNSET) {
     if (axis instanceof Open) return modelValue
-    if (axis instanceof Choice && axis.normalized().some((o) => o.name === modelValue)) {
+    if (axis instanceof Choice && axis.normalized().some((option) => option.name === modelValue)) {
       return axis.valueFor(modelValue as string)
     }
   }
@@ -278,7 +260,7 @@ function resolveList(
   axis: Choice | Fixed | Inherit,
   presetValues: readonly string[] | undefined = undefined
 ): string[] | undefined {
-  const allowed = axis instanceof Choice ? axis.normalized().map((o) => o.name) : undefined
+  const allowed = axis instanceof Choice ? axis.normalized().map((option) => option.name) : undefined
 
   // Model-supplied value
   if (modelValue !== UNSET && allowed !== undefined) {
@@ -291,14 +273,16 @@ function resolveList(
     } else {
       requested = []
     }
-    return requested.filter((t) => allowed.includes(t)).map((t) => choice.valueFor(t) as string)
+    return requested
+      .filter((toolName) => allowed.includes(toolName))
+      .map((toolName) => choice.valueFor(toolName) as string)
   }
 
   // Preset value
   if (presetValues !== undefined) {
     if (allowed !== undefined) {
       const choice = axis as Choice
-      const allowedValues = new Set(allowed.map((n) => choice.valueFor(n)))
+      const allowedValues = new Set(allowed.map((name) => choice.valueFor(name)))
       return presetValues.filter((t) => allowedValues.has(t))
     }
     return [...presetValues]
@@ -306,7 +290,7 @@ function resolveList(
 
   // All choices
   if (axis instanceof Choice && axis.multiple && allowed !== undefined) {
-    return allowed.map((n) => (axis as Choice).valueFor(n) as string)
+    return allowed.map((name) => (axis as Choice).valueFor(name) as string)
   }
   if (axis instanceof Fixed) {
     return axis.value != null ? [...(axis.value as string[])] : undefined
@@ -334,12 +318,13 @@ export interface ResolveSpecAxes {
  *
  * Precedence per axis: a model-supplied argument wins, then the preset's value, then the axis
  * default ({@link Fixed}/{@link Inherit}). An omitted `agent_type` falls back to the default
- * preset, so a bare `subagent(task=...)` behaves like the default role.
+ * preset, so a bare model input behaves like the default role.
  *
  * @param modelInput - Key/value pairs supplied by the model's tool call.
  * @param axes - Axis policies, presets, and the default preset name.
  * @returns A fully resolved {@link AgentSpec}.
  * @throws Error if `agent_type` is provided but not found in `axes.presets`.
+ * @internal Not part of the public API.
  */
 export function resolveSpec(modelInput: Record<string, unknown>, axes: ResolveSpecAxes): AgentSpec {
   const { presets, defaultPreset, instructions } = axes
@@ -398,9 +383,12 @@ export function resolveSpec(modelInput: Record<string, unknown>, axes: ResolveSp
     spec.lastMessages = preset.lastMessages
   }
   if ('last_messages' in modelInput) {
-    const parsed = Number(modelInput['last_messages'])
-    if (Number.isFinite(parsed)) {
-      spec.lastMessages = parsed
+    const raw = modelInput['last_messages']
+    if (typeof raw === 'string' || typeof raw === 'number') {
+      const parsed = typeof raw === 'string' && raw.trim() === '' ? NaN : Number(raw)
+      if (Number.isInteger(parsed) && parsed >= 0) {
+        spec.lastMessages = parsed
+      }
     }
   }
 
@@ -417,21 +405,22 @@ export function resolveSpec(modelInput: Record<string, unknown>, axes: ResolveSp
  *
  * @param parent - The parent agent whose resources child agents inherit.
  * @returns An {@link AgentBuilder} that creates configured child agents from a spec.
+ * @internal Not part of the public API.
  */
 export function defaultBuilder(parent: Agent): AgentBuilder {
   return (spec: AgentSpec): Agent => {
     const parentTools: Map<string, Tool> = new Map()
     const mcpClients: Map<string, McpClient> = new Map()
-    for (const t of parent.toolRegistry.list()) {
-      if (t instanceof McpTool) {
+    for (const tool of parent.toolRegistry.list()) {
+      if (tool instanceof McpTool) {
         // MCP tools flow through mcpServers to avoid duplicates with their client.
-        const client = (t as unknown as { mcpClient: McpClient }).mcpClient
+        const client = (tool as unknown as { mcpClient: McpClient }).mcpClient
         if (client.clientName) {
           mcpClients.set(client.clientName, client)
         }
       } else {
         // Plain tools are selected by name via spec.tools.
-        parentTools.set(t.name, t)
+        parentTools.set(tool.name, tool)
       }
     }
 
@@ -439,7 +428,9 @@ export function defaultBuilder(parent: Agent): AgentBuilder {
 
     // tools=undefined means inherit all; a list means only those.
     const selectedTools =
-      spec.tools === undefined ? parentTools : new Map([...parentTools].filter(([n]) => spec.tools!.includes(n)))
+      spec.tools === undefined
+        ? parentTools
+        : new Map([...parentTools].filter(([toolName]) => spec.tools!.includes(toolName)))
     for (const tool of selectedTools.values()) {
       childTools.push(tool)
     }
@@ -448,7 +439,7 @@ export function defaultBuilder(parent: Agent): AgentBuilder {
     const selected =
       spec.mcpServers === undefined
         ? mcpClients
-        : new Map([...mcpClients].filter(([n]) => spec.mcpServers!.includes(n)))
+        : new Map([...mcpClients].filter(([clientName]) => spec.mcpServers!.includes(clientName)))
     for (const client of selected.values()) {
       childTools.push(client)
     }

@@ -67,11 +67,16 @@ describe('resolveSpec', () => {
       presets: { g: new Preset({ instructions: 'help', context: 'all', lastMessages: 5 }) },
       defaultPreset: 'g',
     }
-    const spec = resolveSpec({ task: 'x' }, axes)
-    expect(spec.agentType).toBe('g')
-    expect(spec.instructions).toBe('help')
-    expect(spec.context).toBe('all')
-    expect(spec.lastMessages).toBe(5)
+    expect(resolveSpec({ task: 'x' }, axes)).toEqual(
+      new AgentSpec({
+        task: 'x',
+        agentType: 'g',
+        instructions: 'help',
+        tools: ['read', 'shell'],
+        context: 'all',
+        lastMessages: 5,
+      })
+    )
   })
 
   it('throws on unknown agent_type', () => {
@@ -85,7 +90,9 @@ describe('resolveSpec', () => {
       expect(() => resolveSpec({ task: 'x', agent_type: bad }, axes)).toThrow(/Unknown agent_type/)
     }
     // null falls back to default preset instead of throwing
-    expect(resolveSpec({ task: 'x', agent_type: null }, axes).agentType).toBe('g')
+    expect(resolveSpec({ task: 'x', agent_type: null }, axes)).toEqual(
+      new AgentSpec({ task: 'x', agentType: 'g', tools: ['read', 'shell'], context: 'none' })
+    )
   })
 
   it('suppresses default preset when ad-hoc instructions provided', () => {
@@ -94,24 +101,28 @@ describe('resolveSpec', () => {
       presets: { g: new Preset({ instructions: 'default' }) },
       defaultPreset: 'g',
     }
-    const spec = resolveSpec({ task: 'x', instructions: 'ad-hoc' }, axes)
-    expect(spec.agentType).toBeUndefined()
-    expect(spec.instructions).toBe('ad-hoc')
+    expect(resolveSpec({ task: 'x', instructions: 'ad-hoc' }, axes)).toEqual(
+      new AgentSpec({ task: 'x', instructions: 'ad-hoc', tools: ['read', 'shell'], context: 'none' })
+    )
   })
 
   it('clamps tools to allowed set and parses last_messages', () => {
-    const spec = resolveSpec({ task: 'x', tools: ['read', 'write'], last_messages: '3' }, AXES)
-    expect(spec.tools).toEqual(['read'])
-    expect(spec.lastMessages).toBe(3)
+    expect(resolveSpec({ task: 'x', tools: ['read', 'write'], last_messages: '3' }, AXES)).toEqual(
+      new AgentSpec({ task: 'x', tools: ['read'], lastMessages: 3, context: 'none' })
+    )
   })
 
   it('sets lastMessages to undefined for invalid input', () => {
-    expect(resolveSpec({ task: 'x', last_messages: 'abc' }, AXES).lastMessages).toBeUndefined()
+    for (const bad of ['abc', '3.5', '', ' ', null, [], false]) {
+      expect(resolveSpec({ task: 'x', last_messages: bad }, AXES).lastMessages).toBeUndefined()
+    }
   })
 
   it('Fixed ignores model-supplied value', () => {
     const axes: ResolveSpecAxes = { ...AXES, instructions: new Fixed('pinned') }
-    expect(resolveSpec({ task: 'x', instructions: 'override' }, axes).instructions).toBe('pinned')
+    expect(resolveSpec({ task: 'x', instructions: 'override' }, axes)).toEqual(
+      new AgentSpec({ task: 'x', instructions: 'pinned', tools: ['read', 'shell'], context: 'none' })
+    )
   })
 
   it('Choice maps option value', () => {
@@ -127,18 +138,21 @@ describe('resolveSpec', () => {
       defaultPreset: 'worker',
       tools: new Choice(['read', 'shell'], true),
     }
-    const spec = resolveSpec({ task: 'x' }, axes)
-    expect(spec.tools).toEqual(['read']) // "write" not in Choice, filtered out
+    expect(resolveSpec({ task: 'x' }, axes)).toEqual(
+      new AgentSpec({ task: 'x', agentType: 'worker', tools: ['read'], context: 'none' })
+    )
   })
 
   it('resolves Fixed tools list', () => {
     const axes: ResolveSpecAxes = { ...AXES, tools: new Fixed(['a', 'b']) }
-    expect(resolveSpec({ task: 'x' }, axes).tools).toEqual(['a', 'b'])
+    expect(resolveSpec({ task: 'x' }, axes)).toEqual(new AgentSpec({ task: 'x', tools: ['a', 'b'], context: 'none' }))
   })
 
   it('resolves Fixed([]) to empty array, not undefined', () => {
     const axes: ResolveSpecAxes = { ...AXES, mcpServers: new Fixed([]) }
-    expect(resolveSpec({ task: 'x' }, axes).mcpServers).toEqual([])
+    expect(resolveSpec({ task: 'x' }, axes)).toEqual(
+      new AgentSpec({ task: 'x', tools: ['read', 'shell'], mcpServers: [], context: 'none' })
+    )
   })
 })
 
@@ -169,7 +183,7 @@ describe('defaultBuilder', () => {
 
     const childToolNames = defaultBuilder(parent)(new AgentSpec({ task: 'x' }))
       .toolRegistry.list()
-      .map((t) => t.name)
+      .map((tool) => tool.name)
 
     expect(childToolNames).toEqual(['read', 'shell'])
   })
@@ -181,7 +195,7 @@ describe('defaultBuilder', () => {
 
     const childToolNames = defaultBuilder(parent)(new AgentSpec({ task: 'x', tools: ['read', 'nonexistent'] }))
       .toolRegistry.list()
-      .map((t) => t.name)
+      .map((tool) => tool.name)
 
     expect(childToolNames).toEqual(['read'])
   })
