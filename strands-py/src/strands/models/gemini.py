@@ -354,16 +354,15 @@ class GeminiModel(Model):
             # merged with, or replaced by, the narrower per-request choice.
             config_params.setdefault("tool_config", tool_config)
 
-        # Server-side tool invocations is not supported in Vertex AI.
-        is_vertex = (
-            self._custom_client.vertexai if self._custom_client is not None else self.client_args.get("vertexai")
-        )
+        # Vertex AI does not support include_server_side_tool_invocations.
+        is_vertex = self._get_client().vertexai
         # Enable flag to mix function declarations with built-in tools.
         needs_server_side_flag = tool_specs and self.config.get("gemini_tools") and not is_vertex
         if needs_server_side_flag:
-            existing = config_params.setdefault("tool_config", genai.types.ToolConfig())
-            if isinstance(existing, genai.types.ToolConfig) and existing.include_server_side_tool_invocations is None:
-                existing.include_server_side_tool_invocations = True
+            tc = config_params.get("tool_config")
+            as_dict = tc.to_json_dict() if isinstance(tc, genai.types.ToolConfig) else dict(tc or {})
+            as_dict.setdefault("include_server_side_tool_invocations", True)
+            config_params["tool_config"] = as_dict
 
         return genai.types.GenerateContentConfig(
             system_instruction=system_prompt,

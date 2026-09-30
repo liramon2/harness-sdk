@@ -15,6 +15,7 @@ def gemini_client():
     with unittest.mock.patch.object(strands.models.gemini.genai, "Client") as mock_client_cls:
         mock_client = mock_client_cls.return_value
         mock_client.aio = unittest.mock.AsyncMock()
+        mock_client.vertexai = False
         yield mock_client
 
 
@@ -1345,12 +1346,9 @@ async def test_stream_gemini_tools_sets_server_side_flag(
 @pytest.mark.asyncio
 async def test_stream_gemini_tools_flag_skipped_on_vertex_ai(gemini_client, messages, tool_spec, model_id):
     """Vertex AI does not support include_server_side_tool_invocations, so the flag is omitted."""
+    gemini_client.vertexai = True
     google_search_tool = genai.types.Tool(google_search=genai.types.GoogleSearch())
-    model = GeminiModel(
-        model_id=model_id,
-        gemini_tools=[google_search_tool],
-        client_args={"api_key": "fake", "vertexai": True},
-    )
+    model = GeminiModel(model_id=model_id, gemini_tools=[google_search_tool])
 
     await anext(model.stream(messages, tool_specs=[tool_spec]))
 
@@ -1408,6 +1406,59 @@ async def test_stream_gemini_tools_flag_skipped_when_params_owns_tool_config(
                 {"google_search": {}},
             ],
             "tool_config": custom_tool_config,
+        },
+        "contents": [{"parts": [{"text": "test"}], "role": "user"}],
+        "model": model_id,
+    }
+    gemini_client.aio.models.generate_content_stream.assert_called_with(**exp_request)
+
+
+@pytest.mark.asyncio
+async def test_stream_gemini_tools_flag_does_not_mutate_caller_tool_config(
+    gemini_client, messages, tool_spec, model_id
+):
+    """The caller's ToolConfig must not be mutated across requests."""
+    google_search_tool = genai.types.Tool(google_search=genai.types.GoogleSearch())
+    caller_tc = genai.types.ToolConfig(
+        function_calling_config=genai.types.FunctionCallingConfig(mode=genai.types.FunctionCallingConfigMode.AUTO),
+    )
+    model = GeminiModel(model_id=model_id, gemini_tools=[google_search_tool], params={"tool_config": caller_tc})
+
+    await anext(model.stream(messages, tool_specs=[tool_spec]))
+
+    assert caller_tc.include_server_side_tool_invocations is None
+
+
+@pytest.mark.asyncio
+async def test_stream_gemini_tools_flag_merged_into_dict_tool_config(gemini_client, messages, tool_spec, model_id):
+    """A dict-form tool_config in params gets the flag merged via setdefault."""
+    google_search_tool = genai.types.Tool(google_search=genai.types.GoogleSearch())
+    model = GeminiModel(
+        model_id=model_id,
+        gemini_tools=[google_search_tool],
+        params={"tool_config": {"function_calling_config": {"mode": "NONE"}}},
+    )
+
+    await anext(model.stream(messages, tool_specs=[tool_spec]))
+
+    exp_request = {
+        "config": {
+            "tools": [
+                {
+                    "function_declarations": [
+                        {
+                            "description": tool_spec["description"],
+                            "name": tool_spec["name"],
+                            "parameters_json_schema": tool_spec["inputSchema"]["json"],
+                        }
+                    ]
+                },
+                {"google_search": {}},
+            ],
+            "tool_config": {
+                "function_calling_config": {"mode": "NONE"},
+                "include_server_side_tool_invocations": True,
+            },
         },
         "contents": [{"parts": [{"text": "test"}], "role": "user"}],
         "model": model_id,
