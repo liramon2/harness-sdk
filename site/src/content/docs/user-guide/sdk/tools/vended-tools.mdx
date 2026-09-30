@@ -693,6 +693,21 @@ Combine vended tools in one agent to cover a multi-step workflow:
 --8<-- "user-guide/sdk/tools/vended-tools.ts:combined_tools_example"
 ```
 
+## Axis policies
+
+Some vended tools let the model configure child agents at runtime. Axis policies control how much freedom the model has over each parameter. Import them from <Syntax py="strands.multiagent.spec" ts="@strands-agents/sdk" />.
+
+| Policy | Effect | Model sees a parameter? |
+|--------|--------|------------------------|
+| <Syntax py="Inherit()" ts="new Inherit()" /> | Child inherits the parent's value | No |
+| <Syntax py="Fixed(value)" ts="new Fixed(value)" /> | Developer pins the value | No |
+| <Syntax py="Open()" ts="new Open()" /> | Model writes a free-form value | Yes (string) |
+| <Syntax py="Choice([...], multiple=True)" ts="new Choice([...], true)" /> | Model picks from a set | Yes (enum) |
+
+Configurable axes: `instructions`, `tools`, <Syntax py="mcp_servers" ts="mcpServers" />, `model`, and `context`. Use `Option` inside a `Choice` to map model-facing names to runtime values. Bundle axis defaults into a `Preset` that the model selects via `agent_type`.
+
+Tools that accept axis policies use a default builder to turn resolved specs into child agents. To replace it, pass a custom builder: any callable that takes an `AgentSpec` and returns an `Agent`.
+
 ## Versioning & maintenance
 
 Vended tools ship as part of the SDK and are updated alongside it. Report bugs and feature requests in the [GitHub repository](https://github.com/strands-agents/harness-sdk/issues).
