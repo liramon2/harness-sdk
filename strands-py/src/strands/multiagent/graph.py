@@ -949,7 +949,8 @@ class Graph(MultiAgentBase):
         Only evaluates destination nodes of outbound edges from the completed batch,
         instead of iterating over all nodes in the graph.
         """
-        if any(node.execution_status == Status.FAILED for node in completed_batch):
+        completed_batch = [node for node in completed_batch if node.execution_status != Status.FAILED]
+        if not completed_batch:
             return []
 
         # Collect unique candidate nodes reachable from the completed batch

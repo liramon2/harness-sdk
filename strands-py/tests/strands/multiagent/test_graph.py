@@ -2038,6 +2038,35 @@ async def test_graph_cancelled_agent_result_fails_closed(mock_strands_tracer, mo
 
 
 @pytest.mark.asyncio
+async def test_graph_cancelled_node_does_not_poison_parallel_batch(mock_strands_tracer, mock_use_span):
+    """In a parallel batch, a cancelled node must not block an unrelated node's downstream."""
+    cancelled_agent = create_mock_agent("cancelled_agent", "Cancelled")
+    cancelled_agent.return_value.stop_reason = "cancelled"
+    healthy_agent = create_mock_agent("healthy_agent", "OK")
+    after_cancelled = create_mock_agent("after_cancelled", "Should not execute")
+    after_healthy = create_mock_agent("after_healthy", "Should execute")
+
+    builder = GraphBuilder()
+    builder.add_node(cancelled_agent, "cancelled")
+    builder.add_node(healthy_agent, "healthy")
+    builder.add_node(after_cancelled, "after_cancelled")
+    builder.add_node(after_healthy, "after_healthy")
+    builder.add_edge("cancelled", "after_cancelled")
+    builder.add_edge("healthy", "after_healthy")
+    builder.set_entry_point("cancelled")
+    builder.set_entry_point("healthy")
+    graph = builder.build()
+
+    result = await graph.invoke_async("parallel batch test")
+
+    assert result.results["cancelled"].status == Status.FAILED
+    assert result.results["healthy"].status == Status.COMPLETED
+    assert after_cancelled.stream_async.call_count == 0
+    assert after_healthy.stream_async.call_count == 1
+    assert result.results["after_healthy"].status == Status.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_graph_persisted(mock_strands_tracer, mock_use_span):
     """Test graph persistence functionality with multimodal input containing binary bytes."""
     import base64
