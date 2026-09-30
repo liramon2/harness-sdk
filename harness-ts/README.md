@@ -1,7 +1,10 @@
 <div align="center">
   <div>
     <a href="https://strandsagents.com">
-      <img src="https://strandsagents.com/latest/assets/logo-github.svg" alt="Strands Agents" width="55px" height="105px">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="https://strandsagents.com/latest/assets/wordmark-github-dark.svg">
+        <img src="https://strandsagents.com/latest/assets/wordmark-github-light.svg" alt="Strands" width="320">
+      </picture>
     </a>
   </div>
 
@@ -54,7 +57,7 @@ await agent.invoke("Find the slowest test in this repo and explain why it's slow
 
 ```typescript
 await createHarness({
-  model: 'bedrock/global.anthropic.claude-opus-4-8', // "provider/name", a bare Bedrock id, or a Model instance
+  model: 'bedrock/global.anthropic.claude-opus-5', // "provider/name", a bare Bedrock id, or a Model instance
   effort: 'auto', // "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
   instructions: undefined, // domain text appended to the system prompt
   tools: undefined, // your tools, added alongside the built-ins
@@ -104,7 +107,7 @@ npm install @google/genai       # for google/*
 Out of the box, `createHarness()` gives you an agent that:
 
 - **Runs on frontier models with reasoning on**, across Amazon Bedrock, Anthropic, OpenAI, and
-  Google. The default is Claude Opus 4.8 on Amazon Bedrock, behind a tuned system prompt: explore
+  Google. The default is Claude Opus 5 on Amazon Bedrock, behind a tuned system prompt: explore
   before changing things, confirm before anything irreversible, verify before calling a task done.
 - **Comes with working tools**: a shell, file tools (`read`, `write`, `edit`), web access, and
   `programmatic_tool_caller`, a sandbox where it writes code that chains, loops over, and
@@ -125,10 +128,10 @@ Everything above is a default, not a constraint. Here's how to adjust each piece
 Pass a `provider/model` string, a bare model id, or a ready-made `Model` instance:
 
 ```typescript
-await createHarness({ model: 'anthropic/claude-opus-4-8' }) // Anthropic's API directly
+await createHarness({ model: 'anthropic/claude-opus-5' }) // Anthropic's API directly
 await createHarness({ model: 'openai/gpt-5.6-sol' }) // OpenAI
 await createHarness({ model: 'google/gemini-3.5-flash' }) // Google
-await createHarness({ model: 'bedrock/global.anthropic.claude-opus-4-8' }) // the default, spelled out
+await createHarness({ model: 'bedrock/global.anthropic.claude-opus-5' }) // the default, spelled out
 await createHarness({ model: 'bedrock-mantle/openai.gpt-5.6-sol' }) // Bedrock's OpenAI-compatible endpoint
 
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
@@ -320,12 +323,12 @@ model provider has its own search (OpenAI, Google, GPT-5/GPT-6 models on `bedroc
 Bedrock Web Search, and Anthropic in Python; TypeScript Anthropic support follows in a coming
 `@strands-agents/sdk` release) the harness turns that on and there is no extra service involved. Elsewhere (Amazon Bedrock
 Converse, other Mantle models, a `Model` instance) `web_search` is off by default with a logged
-warning, and naming it explicitly throws. To search there anyway, opt into the Exa fallback with
+warning, and naming it explicitly throws. To search there anyway, opt into Exa with
 `{ web_search: 'exa' }`: the model gets a `web_search` tool backed by Exa's hosted search. It is
-keyless to start; `EXA_API_KEY` in the environment lifts the rate limit. On a model with native
-search the same setting keeps using the provider's search. Bedrock Web Search also needs the
-`bedrock-websearch` IAM actions (in `AmazonBedrockFullAccess`); without them the request succeeds but
-each search fails.
+keyless to start; `EXA_API_KEY` in the environment lifts the rate limit. `'exa'` is honoured on
+every model, so it also replaces the provider's own search where there is one. Bedrock Web Search
+also needs the `bedrock-websearch` IAM actions (in `AmazonBedrockFullAccess`); without them the
+request succeeds but each search fails.
 
 > [!WARNING]
 > Web search through Exa sends every search query the model writes to Exa (exa.ai), a third-party
@@ -547,6 +550,15 @@ import { HARNESS_CONTRACT, buildSystemPrompt } from '@strands-agents/harness'
 
 const prompt = buildSystemPrompt('You are a data-migration assistant.', [`Current time: ${now}`])
 ```
+
+## Versioning
+
+Strands harness is 0.x and versioned separately from the Strands Harness SDK. Patch releases
+(0.x.Y) carry bug fixes and new features, including new built-in tools; minor releases (0.X.0)
+carry breaking changes and say so in the release notes. Pin to a minor
+(`@strands-agents/harness@~0.1.0`) to avoid breaking changes; patch releases still add features and
+tools. Full policy:
+[Versioning and Support](https://strandsagents.com/docs/user-guide/harness/versioning/).
 
 ## Contributing ❤️
 

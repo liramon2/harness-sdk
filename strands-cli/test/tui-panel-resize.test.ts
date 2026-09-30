@@ -33,7 +33,7 @@ function createController() {
     protocol: 'strands',
     async *stream() {
       yield* []
-      return { stopReason: 'endTurn' }
+      return { stopReason: 'endTurn', context: { projectedTokens: 100, contextWindow: 1_000 } }
     },
     cancel() {},
     info: () => ({ model: 'model-00' }),
@@ -206,7 +206,7 @@ describe('mounted panel resizing', () => {
   it('blocks covered metadata while retaining visible metadata and footer actions', async () => {
     const { controller } = createController()
     const view = await mount(controller)
-    await view.resize(40, 16)
+    await view.resize(40, 14)
     await vi.waitFor(() => view.fits())
     const modelTarget = view.point('model-00')
     controller.openContextPanel()
@@ -221,7 +221,9 @@ describe('mounted panel resizing', () => {
     await vi.waitFor(() => expect(view.screen()).toContain('model-00'))
     await view.click(view.point('model-00'))
     await vi.waitFor(() => expect(controller.getSnapshot().panel?.kind).toBe('models'))
-    await view.click(view.point('context ░'))
+    await controller.submit('measure context')
+    await vi.waitFor(() => expect(view.screen()).toContain('context █'))
+    await view.click(view.point('context █'))
     await vi.waitFor(() => expect(controller.getSnapshot().panel?.kind).toBe('context'))
     await view.click(view.point('/help'))
     expect(controller.getSnapshot().panel).toBeUndefined()

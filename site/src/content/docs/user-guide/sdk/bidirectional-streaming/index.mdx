@@ -1,8 +1,11 @@
 ---
 title: Build a realtime voice agent
-description: "Build a realtime agent that streams audio in and out: a persistent BidiAgent connection, a realtime model provider, and the events, I/O, and interruptions a live conversation needs."
-experimental: true
+description: "Build a realtime agent that streams audio in and out: a persistent BidiAgent connection, a realtime model provider, and the events, I/O, and barge-ins a live conversation needs."
 tags: [bidi-streaming]
+redirectFrom:
+  - docs/user-guide/concepts/bidirectional-streaming/session-management
+  - docs/user-guide/harness/bidirectional-streaming/session-management
+  - docs/user-guide/sdk/bidirectional-streaming/session-management
 sidebar:
   label: Overview
 ---
@@ -66,8 +69,8 @@ choosing a model provider that supports it, and handling the live stream.
     description="Handle the events the agent emits as audio, transcripts, and tool calls arrive."
   />
   <LinkCard
-    title="Interruptions"
-    href="interruption/"
+    title="Barge-in"
+    href="barge-in/"
     description="Let a user cut in mid-response and have the agent stop and listen."
   />
 </CardGrid>
@@ -81,15 +84,16 @@ loop streams audio both ways until you interrupt it.
 ```python
 import asyncio
 
-from strands.experimental.bidi import BidiAgent, BidiAudioIO
-from strands.experimental.bidi.models import BedrockNovaSonicModel
+from strands.bidi import BidiAgent
+from strands.bidi.io import AudioIO
+from strands.bidi.models import BedrockNovaSonicModel
 
-model = BedrockNovaSonicModel()
+model = BedrockNovaSonicModel(model_id="amazon.nova-2-sonic-v1:0")
 agent = BidiAgent(
     model=model,
     system_prompt="You are a helpful voice assistant. Keep replies short and natural.",
 )
-audio_io = BidiAudioIO()
+audio_io = AudioIO()
 
 
 async def main():
@@ -100,7 +104,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Bidirectional streaming is a Python-only experimental feature; install it with
+Bidirectional streaming is available in the Python SDK. Install it with
 `pip install "strands-agents[bidi-all]"`. The [quickstart](quickstart/) covers
 per-provider installs and credentials.
 
@@ -111,7 +115,4 @@ running, then read [BidiAgent](agent/) to configure tools, prompts, and the
 connection lifecycle. Pick a [model provider](models/bedrock/) based on the
 provider you use and the session length you need.
 
-Building for a server rather than a local machine? Read [I/O channels](io/) to
-replace microphone-and-speaker I/O with your own transport, then
-[streaming events](events/) and [interruptions](interruption/) to drive the
-conversation from your own event loop.
+Building for a server rather than a local machine? Read [I/O channels](io/) to replace microphone-and-speaker I/O with your own transport, then [streaming events](events/) and [barge-ins](barge-in/) to drive the conversation from your own event loop.

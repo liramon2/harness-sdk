@@ -1,15 +1,17 @@
-import { createElement } from 'react'
-import { renderToString } from 'ink'
 import { describe, expect, it } from 'vitest'
 
 import { sanitizeTerminalText } from '../src/tui/terminal/sanitize.js'
-import { DnaVortexIntro } from '../src/tui/view/intro.js'
+import { hasRoomForFrogIntro } from '../src/tui/view/intro.js'
 import {
   renderFrogSpiralFrame,
   renderFrogBrandEasterEggFrame,
   renderFrogStartupLockup,
   frogStartupHeight,
 } from '../src/tui/view/frog-intro-renderer.js'
+import { setupBrandFrame } from '../src/tui/view/setup-wizard/brand.js'
+
+// Colored output paints solid cells as backgrounds, leaving only the half-block glyphs as text.
+const STRANDS_WORDMARK = /STRANDS|╔════╝|█▀▀ ▀█▀ █▀█ ▄▀█ █▄ █ █▀▄ █▀▀|▀▀ ▀ ▀ {2}▀ {2}▄▀ {3}▄ {4}▀▄ {2}▀▀/
 
 describe('Strands intro', () => {
   it('retains Homeland ocean and land colors during the brand animation', () => {
@@ -20,12 +22,12 @@ describe('Strands intro', () => {
     expect(frame).not.toContain(';2;129;255;157m')
   })
 
-  it.each([78, 98])('swirls STRANDS into a vortex and restores the wordmark on a frog click at width %s', (width) => {
+  it.each([98, 120])('swirls STRANDS into a vortex and restores the wordmark on a frog click at width %s', (width) => {
     const startup = renderFrogStartupLockup(width)
     const vortex = renderFrogBrandEasterEggFrame(width, 0.54, 1_728)
     const rotating = renderFrogBrandEasterEggFrame(width, 0.58, 1_856)
     const reformed = renderFrogBrandEasterEggFrame(width, 0.84, 2_688)
-    const top = width < 91 ? 0 : 2
+    const top = 2
     const wordX = startup.split('\n')[top]!.indexOf('███████╗')
 
     expect(vortex).toMatch(/[●•◆◇━]/u)
@@ -45,15 +47,11 @@ describe('Strands intro', () => {
     expect(renderFrogBrandEasterEggFrame(width, 1, 3_200)).toBe(startup)
   })
 
-  it('shows a subtle skip hint', () => {
-    const output = renderToString(createElement(DnaVortexIntro, { onComplete: () => {} }), { columns: 80 })
-    const rows = output.split('\n')
-    const hint = '[ space to skip ]'
-    const hintRow = rows.findIndex((row) => row.includes(hint))
-    const hintColumn = rows[hintRow]!.indexOf(hint)
-
-    expect(hintRow).toBe(rows.length - 1)
-    expect(Math.abs(hintColumn + hint.length / 2 - 40)).toBeLessThanOrEqual(1)
+  it('only runs when the full frog lockup fits', () => {
+    expect(hasRoomForFrogIntro(92, 40)).toBe(false)
+    expect(hasRoomForFrogIntro(93, 31)).toBe(false)
+    expect(hasRoomForFrogIntro(93, 32)).toBe(true)
+    expect(hasRoomForFrogIntro(120, 40)).toBe(true)
   })
 
   it('writes STRANDS with the spiral before the frog enters', () => {
@@ -78,7 +76,7 @@ describe('Strands intro', () => {
     [40, 24],
   ])('hands off to the exact startup artwork at %s by %s', (width, height) => {
     const artHeight = frogStartupHeight(width, height - 6)
-    const top = artHeight >= 12 ? 2 : 1
+    const top = artHeight > 2 ? 2 : 1
     const complete = renderFrogSpiralFrame(width, height, 1, 4_200, true)
       .split('\n')
       .slice(top, top + artHeight)
@@ -90,6 +88,26 @@ describe('Strands intro', () => {
     const startup = renderFrogStartupLockup(width, true, 0, 'green', false, {}, artHeight)
     expect(complete).toBe(startup)
     expect(held).toBe(startup)
+  })
+
+  it.each([
+    [98, 32],
+    [98, 36],
+    [98, 40],
+    [140, 40],
+    [78, 42],
+  ])('hands off to the setup wizard brand frame at %s by %s', (width, height) => {
+    const frame = setupBrandFrame(width, height)
+    const top = frame.height > 2 ? 2 : 1
+    const complete = renderFrogSpiralFrame(width, height, 1, 4_200, true, 'green', {}, frame.height, frame.left)
+      .split('\n')
+      .slice(top, top + frame.height)
+      .join('\n')
+    const brand = renderFrogStartupLockup(frame.width, true, 0, 'green', false, {}, frame.height)
+      .split('\n')
+      .map((row) => ' '.repeat(frame.left) + row)
+      .join('\n')
+    expect(complete).toBe(brand)
   })
 
   it('paints full cells as backgrounds and keeps two-color glyphs on the bottom half', () => {
@@ -118,10 +136,21 @@ describe('Strands intro', () => {
 
   it('renders STRANDS in compact layouts', () => {
     for (const width of [22, 40]) {
-      const styled = renderFrogStartupLockup(width, true, 0, 'green', false, {}, 4)
+      const styled = renderFrogStartupLockup(width, true, 0, 'green', false, {}, 2)
       const plain = sanitizeTerminalText(styled)
-      expect(plain).toContain('STRANDS')
+      expect(plain).toMatch(STRANDS_WORDMARK)
     }
+  })
+
+  it('shows the frog only beside the wordmark and keeps the wordmark alone when narrower', () => {
+    const full = renderFrogStartupLockup(91, false, 0, 'green', false, {}, 12)
+    const wordOnly = renderFrogStartupLockup(90, false, 0, 'green', false, {}, 19)
+    const small = renderFrogStartupLockup(64, false, 0, 'green', false, {}, 19)
+
+    expect(full).toContain('▄▀▀▀▄')
+    expect(wordOnly).toContain('███████╗')
+    expect(wordOnly).not.toContain('▄▀▀▀▄')
+    expect(small).not.toContain('███████╗')
   })
 
   it.each([

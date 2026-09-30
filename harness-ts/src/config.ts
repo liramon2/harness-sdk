@@ -30,6 +30,7 @@ import {
   DEFAULT_BUILTIN_PLUGINS,
   DEFAULT_BUILTIN_TOOLS,
   DEFAULT_CONTEXT_MANAGER,
+  DEFAULT_EFFORT,
   DEFAULT_MEMORY_DIR,
   DEFAULT_MODEL,
   DEFAULT_SESSION_DIR,
@@ -169,8 +170,9 @@ export interface SubagentConfig {
   maxDepth?: number
 }
 /**
- * `web_search` setting: a boolean, or `'exa'` to fall back to Exa's hosted search on models without
- * native web search (a third party that sees the queries; keyless, `EXA_API_KEY` lifts its rate limit).
+ * `web_search` setting: a boolean, or `'exa'` to serve `web_search` from Exa's hosted search on any
+ * model, replacing the provider's native search where it has one (a third party that sees the
+ * queries; keyless, `EXA_API_KEY` lifts its rate limit).
  */
 export type WebSearchSetting = boolean | 'exa'
 
@@ -298,7 +300,7 @@ export const DEFAULT_HARNESS_AGENT_CONFIG: HarnessAgentConfig = {
   instructions: '',
   model: DEFAULT_MODEL,
   modelModule: null,
-  effort: 'auto',
+  effort: DEFAULT_EFFORT,
   tools: [],
   subagents: [],
   mcpServers: {},

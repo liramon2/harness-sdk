@@ -20,6 +20,17 @@ afterEach(() => {
 })
 
 describe('ChatView', () => {
+  it('shows notices before the first turn below the startup banner', () => {
+    const output = renderView({
+      snapshot: snapshot({ notices: [{ id: 'notice-1', status: 'delivered', text: 'Nothing to compact yet' }] }),
+      terminalWidth: 80,
+      terminalHeight: 24,
+    })
+
+    expect(output).toContain('╚══════╝')
+    expect(output).toContain('Nothing to compact yet')
+  })
+
   it.each([
     [80, 40],
     [40, 24],
@@ -249,6 +260,7 @@ describe('ChatView', () => {
             status: 'complete',
           },
         ],
+        context: { contextWindow: 200_000 },
       }),
       terminalWidth: 100,
       terminalHeight: 40,
@@ -257,8 +269,8 @@ describe('ChatView', () => {
     expect(output.indexOf('answer')).toBeLessThan(output.indexOf('Message Strands harness'))
     expect(output.indexOf('Message Strands harness')).toBeLessThan(output.lastIndexOf('bedrock/test'))
     expect(output.split('\n').some((line) => line.trim() === 'hello')).toBe(true)
-    expect(output).toContain('context ░░░░░░░░░░ --')
-    expect(output).toContain('Shift+Enter')
+    expect(output).toContain('context ░░░░░░░░░░ 0%')
+    expect(output).toContain('Ctrl+J')
     const rows = output.trimEnd().split('\n')
     expect(rows.at(-3)).toContain('context')
     expect(rows.at(-2)?.trim()).toBe('')
@@ -360,6 +372,36 @@ describe('ChatView', () => {
     })
 
     expect(output).toContain(expected)
+  })
+
+  it('hides the context meter when the context window is unknown', () => {
+    const output = renderView({
+      snapshot: snapshot({ context: { projectedTokens: 12_000 } }),
+      terminalWidth: 100,
+      terminalHeight: 40,
+    })
+
+    expect(output).toContain('bedrock/test')
+    expect(output).not.toContain('context ')
+    expect(output).not.toContain('░')
+  })
+
+  it('shows only the token count in the context panel when the context window is unknown', () => {
+    const output = sanitizeTerminalText(
+      renderView({
+        snapshot: snapshot({
+          context: { projectedTokens: 12_000 },
+          panel: { id: 'context', kind: 'context', title: 'Context usage', rows: [] },
+        }),
+        terminalWidth: 100,
+        terminalHeight: 30,
+      })
+    )
+
+    expect(output).toContain('Context usage')
+    expect(output).toContain('12,000 tokens')
+    expect(output).not.toContain('/ —')
+    expect(output).not.toContain('░')
   })
 
   it.each([44, 100])('shows the context meter and last-turn usage at width %i', (terminalWidth) => {
@@ -1028,6 +1070,11 @@ describe('ChatView', () => {
     expect(output).toContain('write')
     expect(output).toContain('━━●')
     expect(output).toContain('●━━')
+    expect(output).toContain('Enter toggle · Esc save')
+    expect(output).not.toContain('Runs without a permission prompt.')
+    expect(output).not.toContain('Uses Cedar policy')
+    const bashLine = output.split('\n').find((line) => line.includes('bash'))
+    expect(bashLine).toMatch(/bash\s{2,}━━●/)
   })
 
   it('uses provider nodes on both wide and narrow terminals', () => {
@@ -1169,9 +1216,6 @@ describe('ChatView', () => {
         expect(purpleText.join('')).toContain('Option B')
         expect(purpleText.join('')).not.toContain('Option A')
       }
-      if (kind === 'models') {
-        expect(purpleText.join('')).toContain('☆')
-      }
     }
   }, 15_000)
 
@@ -1253,14 +1297,14 @@ describe('voice input', () => {
 describe('panel helpers', () => {
   it('overlays a selection without changing the rendered text', () => {
     const props = {
-      snapshot: snapshot(),
+      snapshot: snapshot({ context: { projectedTokens: 100, contextWindow: 1_000 } }),
       terminalWidth: 80,
       terminalHeight: 16,
     }
     const output = sanitizeTerminalText(renderView(props, { columns: 80 }))
     const lines = output.split('\n')
-    const target = lines.findIndex((line) => line.includes('context ░'))
-    const column = lines[target]!.indexOf('context ░')
+    const target = lines.findIndex((line) => line.includes('context █'))
+    const column = lines[target]!.indexOf('context █')
     const selection = selectScreenText(
       lines,
       { column: column + 1, row: target + 1 },

@@ -1,6 +1,7 @@
 import pytest
 from strands.models import BedrockModel, CacheConfig, Model, ModelRouter
 
+from strands_harness.defaults import DEFAULT_EFFORT
 from strands_harness.models import (
     _claude_extended_thinking,
     _supports_media,
@@ -156,6 +157,71 @@ def test_explicit_effort_on_model_instance_warns_and_builds(caplog):
         model = resolve(instance, effort="low")
     assert model is instance
     assert any("effort='low' not applied" in r.message for r in caplog.records)
+
+
+def test_default_effort_on_model_instance_does_not_warn(caplog):
+    import logging
+
+    instance = BedrockModel(model_id="anything")
+    with caplog.at_level(logging.WARNING, logger="strands_harness.models"):
+        assert resolve(instance, effort=DEFAULT_EFFORT) is instance
+    assert not any("not applied" in r.message for r in caplog.records)
+
+
+# https://github.com/strands-agents/harness-sdk/issues/4472
+@pytest.mark.parametrize(
+    ("spec", "path"),
+    [
+        ("bedrock/global.anthropic.claude-opus-5", ("additional_request_fields", "output_config", "effort")),
+        ("bedrock/global.anthropic.claude-sonnet-5", ("additional_request_fields", "output_config", "effort")),
+        ("bedrock/us.anthropic.claude-sonnet-4-6", ("additional_request_fields", "output_config", "effort")),
+        ("bedrock/global.anthropic.claude-fable-5-1", ("additional_request_fields", "output_config", "effort")),
+        ("bedrock/openai.gpt-5.6-sol", ("additional_request_fields", "reasoning", "effort")),
+        ("bedrock/global.openai.gpt-6-astra", ("additional_request_fields", "reasoning", "effort")),
+        ("bedrock/openai.gpt-oss-120b-1:0", ("additional_request_fields", "reasoning_effort")),
+        ("bedrock/qwen.qwen3-32b-v1:0", ("additional_request_fields", "reasoning_effort")),
+        ("bedrock/us.xai.grok-4", ("additional_request_fields", "reasoning_effort")),
+        ("anthropic/claude-opus-5", ("params", "output_config", "effort")),
+        ("openai/gpt-5.6-sol", ("params", "reasoning", "effort")),
+        ("bedrock-mantle/openai.gpt-5.6-sol", ("params", "reasoning", "effort")),
+        ("google/gemini-3.5-flash", ("params", "thinking_config", "thinking_level")),
+    ],
+)
+def test_default_effort_is_high_where_the_model_has_levels(spec, path):
+    config = resolve(spec, effort=DEFAULT_EFFORT).config
+    at = config
+    for key in path:
+        at = at[key]
+    assert at == "high"
+    assert config == resolve(spec, effort="high").config
+
+
+@pytest.mark.parametrize(
+    "spec", ["bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic/claude-haiku-4-5-20251001"]
+)
+def test_default_effort_is_the_high_budget_on_extended_thinking_claude(spec):
+    config = resolve(spec, effort=DEFAULT_EFFORT).config
+    block = config["additional_request_fields"] if spec.startswith("bedrock/") else config["params"]
+    assert block == {"thinking": {"type": "enabled", "budget_tokens": 16_384}}
+    assert config == resolve(spec, effort="high").config
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "ollama/llama3",
+        "litellm/gpt-4o",
+        "bedrock/amazon.nova-pro-v1:0",
+        "bedrock/us.anthropic.claude-3-haiku-20240307-v1:0",
+        "anthropic/claude-3-haiku-20240307",
+    ],
+)
+def test_default_effort_sends_no_reasoning_field_where_the_model_has_no_levels(spec):
+    config = resolve(spec, effort=DEFAULT_EFFORT).config
+    assert "additional_request_fields" not in config
+    assert "params" not in config
+    with pytest.raises(ValueError, match="not supported"):
+        resolve(spec, effort="high")
 
 
 def test_effort_explicit_level():
