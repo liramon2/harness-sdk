@@ -294,19 +294,19 @@ def default_builder(parent: Agent) -> AgentBuilder:
     Resolves ``spec.tools`` against the parent's tool registry and ``spec.mcp_servers``
     against the parent's MCP clients (by ``client_name``).
     """
-    registered_tools = parent.tool_registry.registry.values() if parent else []
-    parent_tools: dict[str, Any] = {}
-    mcp_clients: dict[str, MCPClient] = {}
-    for t in registered_tools:
-        if isinstance(t, MCPAgentTool):
-            # MCP tools flow through mcp_servers to avoid duplicates with their client.
-            if t.mcp_client.client_name is not None:
-                mcp_clients.setdefault(t.mcp_client.client_name, t.mcp_client)
-        else:
-            # Plain tools are selected by name via spec.tools.
-            parent_tools[t.tool_name] = t
 
     def build(spec: AgentSpec) -> Agent:
+        parent_tools: dict[str, Any] = {}
+        mcp_clients: dict[str, MCPClient] = {}
+        for t in parent.tool_registry.registry.values() if parent else []:
+            if isinstance(t, MCPAgentTool):
+                # MCP tools flow through mcp_servers to avoid duplicates with their client.
+                if t.mcp_client.client_name is not None:
+                    mcp_clients.setdefault(t.mcp_client.client_name, t.mcp_client)
+            else:
+                # Plain tools are selected by name via spec.tools.
+                parent_tools[t.tool_name] = t
+
         # tools=None means inherit all; a list means only those.
         child_tools: list[Any] = (
             list(parent_tools.values())

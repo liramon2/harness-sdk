@@ -419,22 +419,22 @@ export function resolveSpec(modelInput: Record<string, unknown>, axes: ResolveSp
  * @returns An {@link AgentBuilder} that creates configured child agents from a spec.
  */
 export function defaultBuilder(parent: Agent): AgentBuilder {
-  const parentTools: Map<string, Tool> = new Map()
-  const mcpClients: Map<string, McpClient> = new Map()
-  for (const t of parent.toolRegistry.list()) {
-    if (t instanceof McpTool) {
-      // MCP tools flow through mcpServers to avoid duplicates with their client.
-      const client = (t as unknown as { mcpClient: McpClient }).mcpClient
-      if (client.clientName) {
-        mcpClients.set(client.clientName, client)
-      }
-    } else {
-      // Plain tools are selected by name via spec.tools.
-      parentTools.set(t.name, t)
-    }
-  }
-
   return (spec: AgentSpec): Agent => {
+    const parentTools: Map<string, Tool> = new Map()
+    const mcpClients: Map<string, McpClient> = new Map()
+    for (const t of parent.toolRegistry.list()) {
+      if (t instanceof McpTool) {
+        // MCP tools flow through mcpServers to avoid duplicates with their client.
+        const client = (t as unknown as { mcpClient: McpClient }).mcpClient
+        if (client.clientName) {
+          mcpClients.set(client.clientName, client)
+        }
+      } else {
+        // Plain tools are selected by name via spec.tools.
+        parentTools.set(t.name, t)
+      }
+    }
+
     const childTools: (Tool | McpClient)[] = []
 
     // tools=undefined means inherit all; a list means only those.
