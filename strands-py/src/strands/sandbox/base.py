@@ -224,14 +224,17 @@ class Sandbox(ABC):
             body: Request body. ``str`` is sent as UTF-8; ``bytes`` is sent as-is.
                 ``None`` sends no body.
             timeout: Maximum execution time in seconds. ``None`` means no timeout.
-            max_bytes: Cap the response body to this many bytes. ``None`` means no limit.
+            max_bytes: Bound the response body to this many bytes. ``None`` means
+                no limit. A response exceeding the cap raises
+                :class:`SandboxHttpError` rather than returning a truncated body.
             **kwargs: Additional keyword arguments for forward compatibility.
 
         Returns:
             An :class:`HttpResult`. HTTP error statuses (4xx/5xx) are returned in ``status`` rather than raised.
 
         Raises:
-            SandboxHttpError: On network or transport errors.
+            SandboxHttpError: On network/transport errors, or when the response
+                body exceeds ``max_bytes``.
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement request()")
 

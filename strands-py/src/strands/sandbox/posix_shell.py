@@ -31,10 +31,25 @@ logger = logging.getLogger(__name__)
 # the URL reaches a shell command.  Security-critical for the curl transport.
 _URL_CHARS = re.compile(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 
+# Anything outside this set (or a CR/LF/NUL in a value) could inject additional headers
+# or smuggle a second equest, so header names are validated against this pattern.
+_HEADER_NAME = re.compile(r"[!#$%&'*+\-.^_|~0-9A-Za-z]+")
+
 # HTTP methods accepted by request(). An explicit allowlist (matching the
 # http_request tool's HttpMethod) keeps the method safe to place in the curl
 # command line and rejects anything unexpected outright.
 _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"})
+
+# curl's "Failure writing output" exit code. When a response is capped, the body
+# is piped through ``head -c``; once ``head`` has read the cap it closes the pipe
+# and curl aborts with this code — the signal that the body exceeded ``max_bytes``.
+_CURL_WRITE_ERROR = 23
+
+# Tags curl's final URL on stderr for the capped path, where stdout is reserved
+# for the (binary) response body. Error text never contains this literal, so the
+# resolved URL can be recovered unambiguously.
+_URL_MARKER = "STRANDS_URL:"
+_URL_MARKER_RE = re.compile(re.escape(_URL_MARKER) + r"(\S*)")
 
 
 def validate_env_keys(env: dict[str, str]) -> None:
@@ -128,6 +143,28 @@ def _parse_status_and_headers(raw: str) -> tuple[int, str, dict[str, str]]:
         existing = headers.get(name)
         headers[name] = value if existing is None else f"{existing}\n{value}"
     return status, status_text, headers
+
+
+def _resolve_capped_outcome(rc_text: str, stderr_text: str, fallback_exit: int, max_bytes: int | None, url: str) -> str:
+    """Interpret a capped request's curl exit code and tagged stderr.
+
+    The pipeline's exit status is ``head``'s, so curl's own code is read from a file
+    (``fallback_exit`` if unreadable); the resolved URL and error text share the tagged stderr.
+
+    Returns the resolved URL on success.
+
+    Raises:
+        SandboxHttpError: When the body exceeded ``max_bytes`` (curl aborted
+            writing to the closed pipe) or the transfer otherwise failed.
+    """
+    curl_rc = int(rc_text) if rc_text.isdigit() else fallback_exit
+    if curl_rc == _CURL_WRITE_ERROR:
+        raise SandboxHttpError(f"response body exceeded max_bytes ({max_bytes})")
+    if curl_rc != 0:
+        detail = _URL_MARKER_RE.sub("", stderr_text).strip()
+        raise SandboxHttpError(detail or f"curl exited with code {curl_rc}")
+    match = _URL_MARKER_RE.search(stderr_text)
+    return (match.group(1) if match else "") or url
 
 
 class PosixShellSandbox(Sandbox, ABC):
@@ -312,8 +349,10 @@ class PosixShellSandbox(Sandbox, ABC):
         Works with any HTTP method. HTTP error statuses (4xx/5xx) are returned
         in :attr:`HttpResult.status` rather than raised; only transport-level
         failures (DNS, connection, timeout, size cap) raise
-        :class:`SandboxHttpError`. ``max_bytes`` is rejected early when
-        ``Content-Length`` is known and truncated for chunked responses.
+        :class:`SandboxHttpError`. ``max_bytes`` bounds the download: the
+        transfer is stopped at the cap and a response exceeding it raises
+        :class:`SandboxHttpError` rather than returning a silently truncated body
+        (matching the ``web_fetch`` tool).
         """
         method = method.strip().upper()
         if method not in _ALLOWED_METHODS:
@@ -334,10 +373,13 @@ class PosixShellSandbox(Sandbox, ABC):
         body_file = f"/tmp/strands-http-{tag}"
         header_file = f"/tmp/strands-http-{tag}.headers"
         data_file = f"/tmp/strands-http-{tag}.data"
+        rc_file = f"/tmp/strands-http-{tag}.rc"
+        err_file = f"/tmp/strands-http-{tag}.err"
         body_quoted = shlex.quote(body_file)
         header_quoted = shlex.quote(header_file)
         data_quoted = shlex.quote(data_file)
-        part_quoted = shlex.quote(body_file + ".part")
+        rc_quoted = shlex.quote(rc_file)
+        err_quoted = shlex.quote(err_file)
 
         # A HEAD response carries no body; use curl's --head so it doesn't block
         # waiting for a body the server will never send.
@@ -351,29 +393,51 @@ class PosixShellSandbox(Sandbox, ABC):
         opts = ""
         if timeout is not None:
             opts += f" --max-time {timeout}"
-        if max_bytes is not None:
-            opts += f" --max-filesize {max_bytes}"
         if headers:
             for n, v in headers.items():
-                opts += f" -H {shlex.quote(f'{n}: {v}')}"
+                if not _HEADER_NAME.fullmatch(n) or re.search(r"[\r\n\0]", v):
+                    raise SandboxHttpError(
+                        f"invalid header {n!r}: name must be an RFC 7230 token and value may not contain CR/LF/NUL"
+                    )
+                # `-H "name;"` sends an empty-valued header rather than omitting it.
+                opts += f" -H {shlex.quote(f'{n};' if v == '' else f'{n}: {v}')}"
         if body is not None:
             opts += f" --data-binary @{data_quoted}"
 
-        method_opt = "--head" if is_head else f"-X {method}"
-        out_target = "/dev/null" if is_head else body_quoted
+        # Only force the method where curl can't infer it. ``-X POST`` with
+        # ``-L`` replays a bodiless POST through 302/303 redirects (curl keeps the
+        # method but drops the body); omitting ``-X`` lets curl switch to GET on
+        # those redirects like browsers/httpx do. GET and a body-carrying POST are
+        # curl's defaults, so they need no ``-X``.
+        if is_head:
+            method_opt = "--head"
+        elif method == "GET" or (method == "POST" and body is not None):
+            method_opt = ""
+        else:
+            method_opt = f"-X {method}"
 
-        # Build a hardened curl command: protocol restricted to http(s), body →
-        # file, response headers + status → file via -D, final URL on stdout.
-        cmd = (
-            f"curl -sSL -g {method_opt}"
-            f" --proto '=http,https' --proto-redir '=http,https'"
-            f"{opts}"
-            f" -D {header_quoted} -o {out_target}"
-            f" -w '%{{url_effective}}'"
-            f" -- {shlex.quote(url)}"
+        # Cap the response body (not meaningful for HEAD, which carries none).
+        cap = None if is_head else max_bytes
+
+        base_curl = (
+            f"curl -sSL -g {method_opt} --proto '=http,https' --proto-redir '=http,https'{opts} -D {header_quoted}"
         )
-        if max_bytes is not None and not is_head:
-            cmd += f" && head -c {max_bytes} {body_quoted} > {part_quoted} && mv -f {part_quoted} {body_quoted}"
+        if cap is not None:
+            # Bound the download: pipe the body through ``head -c`` so curl is stopped at the cap (head closes
+            # the pipe, curl exits 23) rather than buffering the whole response; the pipeline's status is head's,
+            # so curl's code goes to a file and the resolved URL is tagged onto stderr to keep stdout pure body.
+            cmd = (
+                f"{{ {base_curl} -o - -w '%{{stderr}}{_URL_MARKER}%{{url_effective}}'"
+                f" -- {shlex.quote(url)}; echo $? > {rc_quoted}; }}"
+                f" 2> {err_quoted} | head -c {cap + 1} > {body_quoted}"
+            )
+        else:
+            out_target = "/dev/null" if is_head else body_quoted
+            cmd = f"{base_curl} -o {out_target} -w '%{{url_effective}}' -- {shlex.quote(url)}"
+            if not is_head:
+                # curl omits the -o file for a bodyless response (e.g. 304 Not Modified);
+                # pre-create it so the read-back always finds a (possibly empty) file.
+                cmd = f": > {body_quoted} && {cmd}"
 
         # Give curl a few extra seconds beyond its own --max-time so the
         # sandbox kills it only if curl itself hangs.
@@ -384,17 +448,27 @@ class PosixShellSandbox(Sandbox, ABC):
                 result = await self.execute(cmd, timeout=exec_timeout, **kwargs)
             except SandboxTimeoutError as exc:
                 raise SandboxHttpError(f"request timed out after {timeout}s") from exc
-            if result.exit_code != 0:
-                raise SandboxHttpError(result.stderr.strip() or f"curl exited with code {result.exit_code}")
 
-            resolved_url = result.stdout.strip() or url
+            if cap is not None:
+                # The pipeline's status is ``head``'s, so curl's own code is read from its file;
+                # the resolved URL and any error text come from the tagged stderr.
+                rc_text = (await self.read_file(rc_file)).decode("utf-8", errors="replace").strip()
+                err_text = (await self.read_file(err_file)).decode("utf-8", errors="replace")
+                resolved_url = _resolve_capped_outcome(rc_text, err_text, result.exit_code, cap, url)
+            else:
+                if result.exit_code != 0:
+                    raise SandboxHttpError(result.stderr.strip() or f"curl exited with code {result.exit_code}")
+                resolved_url = result.stdout.strip() or url
+
             raw_headers = (await self.read_file(header_file)).decode("utf-8", errors="replace")
             status, status_text, response_headers = _parse_status_and_headers(raw_headers)
             response_body = b"" if is_head else await self.read_file(body_file)
+            if cap is not None and len(response_body) > cap:
+                raise SandboxHttpError(f"response body exceeded max_bytes ({cap})")
         finally:
             with contextlib.suppress(Exception):
                 await self.execute(
-                    f"rm -f {body_quoted} {part_quoted} {header_quoted} {data_quoted}",
+                    f"rm -f {body_quoted} {header_quoted} {data_quoted} {rc_quoted} {err_quoted}",
                     timeout=10,
                 )
 

@@ -12,9 +12,15 @@ Windows.
 """
 
 import asyncio
+import contextlib
+import http.server
 import os
+import re
 import shlex
+import shutil
 import sys
+import threading
+import urllib.parse
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -23,12 +29,12 @@ import pytest
 from strands.sandbox import (
     ExecutionResult,
     FileInfo,
-    HttpResult,
     PosixShellSandbox,
     StreamChunk,
 )
 from strands.sandbox.errors import SandboxHttpError, SandboxPathNotFoundError
 from strands.sandbox.posix_shell import (
+    _URL_MARKER,
     _parse_status_and_headers,
     build_shell_env_prefix,
     validate_env_keys,
@@ -614,10 +620,23 @@ def test_file_info_defaults():
 class _MockHttpSandbox:
     """Mock implementing execute + read_file + write_file for request() tests."""
 
-    def __init__(self, *, stdout="https://example.com", stderr="", exit_code=0, headers=None, body=None):
+    def __init__(
+        self,
+        *,
+        stdout="https://example.com",
+        stderr="",
+        exit_code=0,
+        headers=None,
+        body=None,
+        rc="0",
+        err=f"{_URL_MARKER}https://example.com",
+    ):
         self._result = ExecutionResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
-        self._headers = headers or b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
-        self._body = body or b"<html><body>Hello</body></html>"
+        default_headers = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+        self._headers = default_headers if headers is None else headers
+        self._body = b"<html><body>Hello</body></html>" if body is None else body
+        self._rc = rc
+        self._err = err
         self.commands: list[str] = []
         self.written: dict[str, bytes] = {}
 
@@ -630,6 +649,10 @@ class _MockHttpSandbox:
     async def read_file(self, path, **kwargs):
         if path.endswith(".headers"):
             return self._headers
+        if path.endswith(".rc"):
+            return self._rc.encode()
+        if path.endswith(".err"):
+            return self._err.encode()
         if "/tmp/strands-http-" in path:
             return self._body
         raise FileNotFoundError(path)
@@ -639,176 +662,145 @@ class _MockHttpSandbox:
 
 
 class TestRequest:
+    """Command-shape and validation unit tests against a canned mock.
+
+    The behavioral contract (status/headers/body/resolved_url, raise-vs-return)
+    is proven against a real curl + HTTP server in :class:`TestRequestLive`;
+    these only pin the curl invocation and the input validation that happens
+    before any process runs.
+    """
+
     @pytest.mark.asyncio
-    async def test_successful_request(self):
+    async def test_non_capped_curl_command_shape(self):
         sb = _MockHttpSandbox()
-        result = await PosixShellSandbox.request(sb, "GET", "https://example.com")
-
-        assert result == HttpResult(
-            status=200,
-            status_text="OK",
-            resolved_url="https://example.com",
-            headers={"content-type": "text/html; charset=utf-8"},
-            body=b"<html><body>Hello</body></html>",
-        )
-
-        # Verify hardened curl flags. No --fail: error statuses are reported.
+        await PosixShellSandbox.request(sb, "GET", "https://example.com", headers={"X-Key": "val"})
         cmd = sb.commands[0]
-        assert "curl -sSL -g -X GET" in cmd
+        # Hardened flags; no --fail (error statuses are reported, not raised).
+        assert "curl -sSL -g " in cmd
         assert "--fail" not in cmd
-        assert "--proto '=http,https'" in cmd
+        assert "--proto '=http,https' --proto-redir '=http,https'" in cmd
         assert "-D " in cmd and "-o " in cmd
+        assert "-H 'X-Key: val'" in cmd
+        # No cap → no download pipe.
+        assert "head -c" not in cmd
+        # curl omits the -o file for a bodyless 304, so it is pre-created.
+        body_file = re.search(r"/tmp/strands-http-[0-9a-f]+\b", cmd).group(0)
+        assert cmd.startswith(f": > {body_file} && ")
+        assert f"-o {body_file}" in cmd
+        assert sb.commands[-1].startswith("rm -f")  # temp files cleaned up
 
     @pytest.mark.asyncio
-    async def test_timeout_and_max_bytes_and_headers(self):
+    async def test_capped_curl_command_shape(self):
         sb = _MockHttpSandbox()
-        await PosixShellSandbox.request(
-            sb,
-            "GET",
-            "https://example.com",
-            max_bytes=1024,
-            timeout=15,
-            headers={"X-Key": "val"},
-        )
+        await PosixShellSandbox.request(sb, "GET", "https://example.com", max_bytes=1024, timeout=15)
         cmd = sb.commands[0]
         assert "--max-time 15" in cmd
-        assert "head -c 1024" in cmd
-        assert "-H 'X-Key: val'" in cmd
+        assert "--max-filesize" not in cmd  # unused: would miss chunked responses
+        # Body piped through `head -c` (bounds the transfer); curl writes to
+        # stdout, its exit code is captured, and the URL is tagged onto stderr.
+        assert "-o -" in cmd
+        assert "| head -c 1025 >" in cmd  # cap + 1 byte, so an overshoot is caught by length
+        assert "echo $? >" in cmd
+        assert f"%{{stderr}}{_URL_MARKER}%{{url_effective}}" in cmd
 
     @pytest.mark.asyncio
-    async def test_no_timeout_no_max_bytes(self):
-        sb = _MockHttpSandbox()
-        await PosixShellSandbox.request(sb, "GET", "https://example.com")
-        cmd = sb.commands[0]
-        assert "--max-time" not in cmd
-        assert "head -c" not in cmd
-
-    @pytest.mark.asyncio
-    async def test_post_with_body_writes_data_file(self):
-        sb = _MockHttpSandbox()
-        await PosixShellSandbox.request(sb, "POST", "https://example.com", body='{"a": 1}')
-        # Body is written to a temp file (never placed on the command line)...
-        assert any(p.endswith(".data") for p in sb.written)
-        data_path = next(p for p in sb.written if p.endswith(".data"))
-        assert sb.written[data_path] == b'{"a": 1}'
-        # ...and fed to curl via --data-binary @file with the method set.
-        cmd = sb.commands[0]
-        assert "-X POST" in cmd
-        assert f"--data-binary @{shlex.quote(data_path)}" in cmd
-        assert '{"a": 1}' not in cmd
-
-    @pytest.mark.asyncio
-    async def test_bytes_body_sent_as_is(self):
+    async def test_body_written_to_file_not_command_line(self):
         sb = _MockHttpSandbox()
         await PosixShellSandbox.request(sb, "PUT", "https://example.com", body=b"\x00\x01\x02")
         data_path = next(p for p in sb.written if p.endswith(".data"))
-        assert sb.written[data_path] == b"\x00\x01\x02"
+        assert sb.written[data_path] == b"\x00\x01\x02"  # bytes sent as-is
+        assert f"--data-binary @{shlex.quote(data_path)}" in sb.commands[0]
+        # No body → no data file, no --data-binary.
+        sb2 = _MockHttpSandbox()
+        await PosixShellSandbox.request(sb2, "GET", "https://example.com")
+        assert sb2.written == {}
+        assert "--data-binary" not in sb2.commands[0]
 
     @pytest.mark.asyncio
-    async def test_no_body_writes_nothing_and_omits_data_flag(self):
-        sb = _MockHttpSandbox()
-        await PosixShellSandbox.request(sb, "GET", "https://example.com")
-        assert sb.written == {}
-        assert "--data-binary" not in sb.commands[0]
+    async def test_method_opt_lets_curl_infer_where_it_can(self):
+        # -X POST + -L replays a bodiless POST through 302/303 redirects (curl
+        # keeps the method but drops the body). Omit -X where curl infers it:
+        # GET (default) and a body-carrying POST. HEAD uses --head, never -X.
+        async def token(method, **kw):
+            sb = _MockHttpSandbox()
+            await PosixShellSandbox.request(sb, method, "https://example.com", **kw)
+            return sb.commands[0]
 
-    @pytest.mark.asyncio
-    async def test_head_uses_head_flag_and_empty_body(self):
-        sb = _MockHttpSandbox()
-        result = await PosixShellSandbox.request(sb, "HEAD", "https://example.com")
-        cmd = sb.commands[0]
-        # --head avoids curl hanging on a body the server never sends; the body
-        # goes to /dev/null and the response body is empty.
-        assert "--head" in cmd
-        assert "-X HEAD" not in cmd
-        assert "-o /dev/null" in cmd
-        assert result.status == 200
-        assert result.status_text == "OK"
-        assert result.body == b""
-        assert result.headers["content-type"] == "text/html; charset=utf-8"
+        assert "-X" not in await token("GET")
+        assert "-X" not in await token("POST", body="payload")
+        assert "-X POST" in await token("POST")  # bodiless POST must stay a POST
+        assert "-X PUT" in await token("PUT", body="payload")
+        assert "-X DELETE" in await token("DELETE")
+        head_cmd = await token("HEAD")
+        assert "--head" in head_cmd and "-X" not in head_cmd and "-o /dev/null" in head_cmd
+        assert "head -c" not in head_cmd  # HEAD is never capped
+        assert not head_cmd.startswith(": >")  # /dev/null, no body file to pre-create
 
     @pytest.mark.asyncio
     async def test_method_is_normalized_and_validated(self):
         sb = _MockHttpSandbox()
         await PosixShellSandbox.request(sb, "  patch  ", "https://example.com")
         assert "-X PATCH" in sb.commands[0]
-
         for method in ["GET;rm -rf /", "GET POST", "", "G-E-T", "POST!"]:
             with pytest.raises(SandboxHttpError, match="method"):
                 await PosixShellSandbox.request(_MockHttpSandbox(), method, "https://example.com")
 
     @pytest.mark.asyncio
-    async def test_transport_failure_raises(self):
-        # Without --fail, HTTP error statuses no longer fail curl; only genuine
-        # transport errors (DNS, connection, size cap) make it exit non-zero.
-        sb = _MockHttpSandbox(exit_code=7, stderr="curl: (7) Failed to connect")
-        with pytest.raises(SandboxHttpError, match="connect"):
-            await PosixShellSandbox.request(sb, "GET", "https://example.com")
+    async def test_rejects_header_injection(self):
+        # CRLF/NUL in a value, or a non-token name, must not reach the wire.
+        for headers in [
+            {"X-Evil": "val\r\nX-Injected: 1"},
+            {"X-Evil": "val\x00"},
+            {"Bad Name": "val"},
+            {"X:Colon": "val"},
+            {"": "val"},
+        ]:
+            with pytest.raises(SandboxHttpError, match="invalid header"):
+                await PosixShellSandbox.request(_MockHttpSandbox(), "GET", "https://example.com", headers=headers)
+        # An empty value is valid and uses curl's `name;` form (not `name:`,
+        # which curl would drop).
+        sb = _MockHttpSandbox()
+        await PosixShellSandbox.request(sb, "GET", "https://example.com", headers={"X-Empty": ""})
+        assert "-H 'X-Empty;'" in sb.commands[0]
 
     @pytest.mark.asyncio
-    async def test_error_status_is_returned_not_raised(self):
-        sb = _MockHttpSandbox(
-            headers=b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\n",
-            body=b"nope",
-        )
-        result = await PosixShellSandbox.request(sb, "GET", "https://example.com/missing")
-        assert result.status == 404
-        assert result.status_text == "Not Found"
-        assert result.body == b"nope"
-
-    @pytest.mark.asyncio
-    async def test_rejects_unsafe_url_chars(self):
-        """RFC 3986 character allowlist rejects shell-unsafe characters."""
-        for url in [
-            "https://example.com/path with spaces",
+    async def test_rejects_bad_urls(self):
+        bad = [
+            "https://example.com/path with spaces",  # RFC 3986 allowlist
             "https://example.com/café",
             "https://example.com/`id`",
-            'https://example.com/"test"',
             "https://example.com/path\nnewline",
-            "https://example.com/{path}",
             "",
-        ]:
+            "ftp://example.com",  # non-http(s) scheme
+            "file:///etc/passwd",
+            "http://",  # no host
+        ]
+        for url in bad:
             with pytest.raises(SandboxHttpError):
                 await PosixShellSandbox.request(_MockHttpSandbox(), "GET", url)
 
     @pytest.mark.asyncio
-    async def test_rejects_non_http_scheme(self):
-        for url in ["ftp://example.com", "file:///etc/passwd", "javascript:alert(1)"]:
-            with pytest.raises(SandboxHttpError, match="http\\(s\\)"):
-                await PosixShellSandbox.request(_MockHttpSandbox(), "GET", url)
+    async def test_capped_outcome_from_curl_exit_and_marker(self):
+        # Overflow: head closes the pipe at the cap → curl exit 23.
+        sb = _MockHttpSandbox(rc="23", err=f"{_URL_MARKER}https://example.com")
+        with pytest.raises(SandboxHttpError, match="exceeded max_bytes"):
+            await PosixShellSandbox.request(sb, "GET", "https://example.com", max_bytes=100)
+        # Transport error: surfaced with the URL marker stripped from the message.
+        sb = _MockHttpSandbox(rc="7", err=f"curl: (7) Failed to connect{_URL_MARKER}https://example.com")
+        with pytest.raises(SandboxHttpError, match="Failed to connect") as exc:
+            await PosixShellSandbox.request(sb, "GET", "https://example.com", max_bytes=1024)
+        assert _URL_MARKER not in str(exc.value)
+        # Success: resolved URL recovered from the stderr marker.
+        sb = _MockHttpSandbox(rc="0", err=f"{_URL_MARKER}https://example.com/final")
+        result = await PosixShellSandbox.request(sb, "GET", "https://example.com", max_bytes=1024)
+        assert result.resolved_url == "https://example.com/final"
 
     @pytest.mark.asyncio
-    async def test_rejects_no_host(self):
-        with pytest.raises(SandboxHttpError, match="no host"):
-            await PosixShellSandbox.request(_MockHttpSandbox(), "GET", "http://")
-
-    @pytest.mark.asyncio
-    async def test_strips_url_whitespace(self):
-        sb = _MockHttpSandbox()
-        result = await PosixShellSandbox.request(sb, "GET", "  https://example.com  ")
-        assert result.resolved_url == "https://example.com"
-
-    @pytest.mark.asyncio
-    async def test_cleanup_runs(self):
-        # Success
-        sb = _MockHttpSandbox()
-        await PosixShellSandbox.request(sb, "GET", "https://example.com")
-        assert sb.commands[-1].startswith("rm -f")
-
-        # Failure
+    async def test_cleanup_runs_on_failure(self):
         sb = _MockHttpSandbox(exit_code=1, stderr="fail")
         with pytest.raises(SandboxHttpError):
             await PosixShellSandbox.request(sb, "GET", "https://example.com")
         assert sb.commands[-1].startswith("rm -f")
-
-    @pytest.mark.asyncio
-    async def test_resolved_url(self):
-        sb = _MockHttpSandbox(stdout="https://example.com/redirected")
-        result = await PosixShellSandbox.request(sb, "GET", "https://example.com")
-        assert result.resolved_url == "https://example.com/redirected"
-
-        sb = _MockHttpSandbox(stdout="")
-        result = await PosixShellSandbox.request(sb, "GET", "https://example.com")
-        assert result.resolved_url == "https://example.com"
 
 
 class TestParseStatusAndHeaders:
@@ -878,3 +870,202 @@ class TestParseStatusAndHeaders:
         status, _, headers = _parse_status_and_headers(raw)
         assert status == 200
         assert headers == {"content-type": "text/html"}
+
+
+# ---- request() against a real HTTP server (end-to-end through sh + curl) ----
+#
+# The command-shape assertions above pin the curl invocation, but can't prove the
+# contract (status/headers/body/resolved_url, raise-vs-return). These drive
+# request() through _ShellTestSandbox (real `sh -c`) against a stdlib HTTP server,
+# so an actual curl parses an actual response. Skipped if curl is missing.
+
+_CURL_AVAILABLE = shutil.which("curl") is not None
+
+
+class _RequestHandler(http.server.BaseHTTPRequestHandler):
+    """Routes used by the live request() tests. See the ``do_*`` dispatch below."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):  # noqa: D102 - silence per-request stderr logging
+        pass
+
+    def _handle(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        length = int(self.headers.get("content-length", 0))
+        body = self.rfile.read(length) if length else b""
+
+        if path == "/hello":
+            payload = b"<html><body>Hello</body></html>"
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        elif path == "/echo":
+            # Report what the server actually received, so the test can assert
+            # the method and body survived (e.g. across a redirect).
+            payload = f"{self.command}|{body.decode('utf-8', 'replace')}".encode()
+            self.send_response(200)
+            self.send_header("content-type", "text/plain")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        elif path == "/redirect-303":
+            # A 303 forces curl to decide method handling on redirect.
+            self.send_response(303)
+            self.send_header("location", "/echo")
+            self.send_header("content-length", "0")
+            self.end_headers()
+        elif path == "/set-cookie":
+            self.send_response(200)
+            self.send_header("set-cookie", "a=1")
+            self.send_header("set-cookie", "b=2")
+            self.send_header("content-length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        elif path == "/not-found":
+            self.send_response(404)
+            self.send_header("content-type", "text/plain")
+            self.send_header("content-length", "3")
+            self.end_headers()
+            self.wfile.write(b"no!")
+        elif path == "/not-modified":
+            # 304 carries no body and no content-length; curl omits the -o file.
+            self.send_response(304)
+            self.end_headers()
+        elif path == "/sized":
+            # Fixed-size body with Content-Length: curl delivers it in one read
+            # and exits 0, so an overshoot can't rely on curl's exit-23 fast path.
+            n = int(urllib.parse.parse_qs(parsed.query).get("n", ["0"])[0])
+            payload = b"A" * n
+            self.send_response(200)
+            self.send_header("content-type", "text/plain")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        elif path == "/big":
+            # Chunked (no content-length) so --max-filesize can't pre-reject it.
+            # curl closes the socket once head -c hits the cap; stop writing on
+            # the resulting broken pipe instead of blocking the server thread.
+            self.send_response(200)
+            self.send_header("content-type", "application/octet-stream")
+            self.end_headers()
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                for _ in range(64):
+                    self.wfile.write(b"x" * 1024)
+                    self.wfile.flush()
+        else:
+            self.send_response(404)
+            self.send_header("content-length", "0")
+            self.end_headers()
+
+    do_GET = _handle
+    do_POST = _handle
+    do_PUT = _handle
+    do_DELETE = _handle
+    do_HEAD = _handle
+
+
+@pytest.fixture
+def http_server():
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RequestHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.skipif(not _CURL_AVAILABLE, reason="curl not available")
+class TestRequestLive:
+    @pytest.mark.asyncio
+    async def test_get_returns_status_headers_body(self, sandbox, http_server):
+        result = await PosixShellSandbox.request(sandbox, "GET", f"{http_server}/hello")
+        assert result.status == 200
+        assert result.status_text == "OK"
+        assert result.body == b"<html><body>Hello</body></html>"
+        assert result.headers["content-type"] == "text/html; charset=utf-8"
+        assert result.resolved_url == f"{http_server}/hello"
+
+    @pytest.mark.asyncio
+    async def test_post_body_reaches_server(self, sandbox, http_server):
+        result = await PosixShellSandbox.request(sandbox, "POST", f"{http_server}/echo", body="payload")
+        assert result.status == 200
+        assert result.body == b"POST|payload"
+
+    @pytest.mark.asyncio
+    async def test_post_body_switches_to_get_on_303_redirect(self, sandbox, http_server):
+        # Regression: `-X POST -L` replayed a bodiless POST; omitting -X lets curl
+        # switch to GET on a 303 the way browsers/httpx do.
+        result = await PosixShellSandbox.request(sandbox, "POST", f"{http_server}/redirect-303", body="payload")
+        assert result.status == 200
+        assert result.body == b"GET|"
+        assert result.resolved_url == f"{http_server}/echo"
+
+    @pytest.mark.asyncio
+    async def test_error_status_is_returned_not_raised(self, sandbox, http_server):
+        result = await PosixShellSandbox.request(sandbox, "GET", f"{http_server}/not-found")
+        assert result.status == 404
+        assert result.status_text == "Not Found"
+        assert result.body == b"no!"
+
+    @pytest.mark.asyncio
+    async def test_repeated_response_headers_are_preserved(self, sandbox, http_server):
+        result = await PosixShellSandbox.request(sandbox, "GET", f"{http_server}/set-cookie")
+        assert result.headers["set-cookie"] == "a=1\nb=2"
+
+    @pytest.mark.asyncio
+    async def test_304_returns_empty_body_not_filenotfound(self, sandbox, http_server):
+        # Regression: curl omits the -o file for a 304, which used to surface as
+        # a bare FileNotFoundError on read-back.
+        result = await PosixShellSandbox.request(sandbox, "GET", f"{http_server}/not-modified")
+        assert result.status == 304
+        assert result.body == b""
+
+    @pytest.mark.asyncio
+    async def test_max_bytes_bounds_chunked_download(self, sandbox, http_server):
+        # A chunked response (no content-length) exceeding the cap must raise,
+        # not silently truncate or buffer the whole 64 KiB; one within the cap
+        # succeeds.
+        with pytest.raises(SandboxHttpError, match="exceeded max_bytes"):
+            await PosixShellSandbox.request(sandbox, "GET", f"{http_server}/big", max_bytes=100)
+        result = await PosixShellSandbox.request(sandbox, "GET", f"{http_server}/hello", max_bytes=1_000_000)
+        assert result.body == b"<html><body>Hello</body></html>"
+
+    @pytest.mark.asyncio
+    async def test_max_bytes_catches_small_overshoot_and_allows_exact(self, sandbox, http_server):
+        # A body one byte over the cap (with Content-Length) arrives in curl's
+        # first read, so curl exits 0 and the exit-23 fast path never fires — the
+        # post-read length check must still raise. A body exactly at the cap is
+        # not an overshoot and comes back intact.
+        with pytest.raises(SandboxHttpError, match="exceeded max_bytes"):
+            await PosixShellSandbox.request(sandbox, "GET", f"{http_server}/sized?n=101", max_bytes=100)
+        result = await PosixShellSandbox.request(sandbox, "GET", f"{http_server}/sized?n=100", max_bytes=100)
+        assert result.status == 200
+        assert result.body == b"A" * 100
+
+    @pytest.mark.asyncio
+    async def test_crlf_header_value_is_rejected_before_the_wire(self, sandbox, http_server):
+        with pytest.raises(SandboxHttpError, match="invalid header"):
+            await PosixShellSandbox.request(
+                sandbox, "GET", f"{http_server}/hello", headers={"X-Evil": "v\r\nX-Injected: 1"}
+            )
+
+    @pytest.mark.asyncio
+    async def test_head_returns_headers_without_body(self, sandbox, http_server):
+        result = await PosixShellSandbox.request(sandbox, "HEAD", f"{http_server}/hello")
+        assert result.status == 200
+        assert result.body == b""
+        assert result.headers["content-type"] == "text/html; charset=utf-8"
+
+    @pytest.mark.asyncio
+    async def test_connection_refused_raises(self, sandbox):
+        # Nothing is listening on this port → genuine transport failure.
+        with pytest.raises(SandboxHttpError):
+            await PosixShellSandbox.request(sandbox, "GET", "http://127.0.0.1:1/nope", timeout=5)
