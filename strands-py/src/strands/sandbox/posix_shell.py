@@ -21,8 +21,8 @@ from urllib.parse import urlparse
 
 from .base import Sandbox
 from .constants import ENV_KEY_PATTERN, LANGUAGE_PATTERN
-from .errors import SandboxFetchError, SandboxPathNotFoundError, SandboxTimeoutError
-from .types import ExecutionResult, FetchResult, FileInfo, StreamChunk
+from .errors import SandboxHttpError, SandboxPathNotFoundError, SandboxTimeoutError
+from .types import ExecutionResult, FileInfo, HttpResult, StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 # set (whitespace, quotes, control characters, non-ASCII) is rejected before
 # the URL reaches a shell command.  Security-critical for the curl transport.
 _URL_CHARS = re.compile(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
+
+# HTTP methods accepted by request(). An explicit allowlist (matching the
+# http_request tool's HttpMethod) keeps the method safe to place in the curl
+# command line and rejects anything unexpected outright.
+_ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"})
 
 
 def validate_env_keys(env: dict[str, str]) -> None:
@@ -82,12 +87,16 @@ def _eof_marker() -> str:
     return f"STRANDS_EOF_{uuid.uuid4().hex[:16]}"
 
 
-def _parse_header_dump(raw: str) -> dict[str, str]:
-    r"""Parse a curl ``-D`` header dump into ``{lowered_name: value}``.
+def _parse_status_and_headers(raw: str) -> tuple[int, str, dict[str, str]]:
+    r"""Parse a curl ``-D`` header dump into ``(status, status_text, headers)``.
 
     Curl dumps headers for every hop in a redirect chain, separated by blank
     lines. Only the final response is parsed so that stale headers from
     intermediate redirects don't leak through.
+
+    Repeated headers (e.g. ``Set-Cookie``) are preserved by joining their values
+    with a newline, matching the ``http_request`` tool's handling. ``status`` is
+    ``0`` and ``status_text`` is ``""`` when the dump has no parseable status line.
     """
     # Split on blank lines, take the last non-empty block.
     blocks = re.split(r"\n\s*\n", raw.replace("\r\n", "\n"))
@@ -97,18 +106,28 @@ def _parse_header_dump(raw: str) -> dict[str, str]:
             last_block = block
             break
 
-    result: dict[str, str] = {}
+    status = 0
+    status_text = ""
+    headers: dict[str, str] = {}
     for line in last_block.split("\n"):
         line = line.strip()
-        if not line or line.upper().startswith("HTTP/"):
+        if not line:
+            continue
+        if line.upper().startswith("HTTP/"):
+            # Status line, e.g. "HTTP/1.1 200 OK" or "HTTP/2 204".
+            parts = line.split(None, 2)
+            if len(parts) >= 2 and parts[1].isdigit():
+                status = int(parts[1])
+                status_text = parts[2].strip() if len(parts) == 3 else ""
             continue
         colon = line.find(":")
         if colon < 1:
             continue
         name = line[:colon].strip().lower()
         value = line[colon + 1 :].strip()
-        result[name] = value
-    return result
+        existing = headers.get(name)
+        headers[name] = value if existing is None else f"{existing}\n{value}"
+    return status, status_text, headers
 
 
 class PosixShellSandbox(Sandbox, ABC):
@@ -277,41 +296,58 @@ class PosixShellSandbox(Sandbox, ABC):
                 entries.append(FileInfo(name=name, is_dir=is_dir))
         return entries
 
-    async def fetch(
+    async def request(
         self,
+        method: str,
         url: str,
         *,
-        max_bytes: int | None = None,
-        timeout: float | None = None,
         headers: dict[str, str] | None = None,
+        body: bytes | str | None = None,
+        timeout: float | None = None,
+        max_bytes: int | None = None,
         **kwargs: Any,
-    ) -> FetchResult:
-        """Fetch a URL with ``curl`` inside the sandbox.
+    ) -> HttpResult:
+        """Make an HTTP request with ``curl`` inside the sandbox.
 
-        ``max_bytes`` is rejected early when ``Content-Length`` is known and
-        truncated for chunked responses.
+        Works with any HTTP method. HTTP error statuses (4xx/5xx) are returned
+        in :attr:`HttpResult.status` rather than raised; only transport-level
+        failures (DNS, connection, timeout, size cap) raise
+        :class:`SandboxHttpError`. ``max_bytes`` is rejected early when
+        ``Content-Length`` is known and truncated for chunked responses.
         """
+        method = method.strip().upper()
+        if method not in _ALLOWED_METHODS:
+            raise SandboxHttpError(f"Unsupported HTTP method {method!r}; expected one of {sorted(_ALLOWED_METHODS)}.")
         url = url.strip()
         if not _URL_CHARS.fullmatch(url):
-            raise SandboxFetchError(
-                "fetch URLs may only contain the characters RFC 3986 allows; "
+            raise SandboxHttpError(
+                "request URLs may only contain the characters RFC 3986 allows; "
                 "percent-encode spaces and non-ASCII characters (and punycode the host) and retry."
             )
         parts = urlparse(url)
         if parts.scheme not in ("http", "https"):
-            raise SandboxFetchError(f"fetch only supports http(s) URLs, got {url!r}.")
+            raise SandboxHttpError(f"request only supports http(s) URLs, got {url!r}.")
         if not parts.hostname:
-            raise SandboxFetchError(f"fetch URL has no host: {url!r}.")
+            raise SandboxHttpError(f"request URL has no host: {url!r}.")
 
         tag = uuid.uuid4().hex
-        body_file = f"/tmp/strands-fetch-{tag}"
-        header_file = f"/tmp/strands-fetch-{tag}.headers"
+        body_file = f"/tmp/strands-http-{tag}"
+        header_file = f"/tmp/strands-http-{tag}.headers"
+        data_file = f"/tmp/strands-http-{tag}.data"
         body_quoted = shlex.quote(body_file)
         header_quoted = shlex.quote(header_file)
+        data_quoted = shlex.quote(data_file)
         part_quoted = shlex.quote(body_file + ".part")
 
-        # Build a hardened curl command: protocol restricted to http(s),
-        # body → file, response headers → file via -D, final URL on stdout.
+        # A HEAD response carries no body; use curl's --head so it doesn't block
+        # waiting for a body the server will never send.
+        is_head = method == "HEAD"
+
+        # Write the request body to a temp file and feed it via --data-binary so
+        # arbitrary bytes never touch the shell command line.
+        if body is not None:
+            await self.write_file(data_file, body.encode("utf-8") if isinstance(body, str) else body)
+
         opts = ""
         if timeout is not None:
             opts += f" --max-time {timeout}"
@@ -320,15 +356,23 @@ class PosixShellSandbox(Sandbox, ABC):
         if headers:
             for n, v in headers.items():
                 opts += f" -H {shlex.quote(f'{n}: {v}')}"
+        if body is not None:
+            opts += f" --data-binary @{data_quoted}"
+
+        method_opt = "--head" if is_head else f"-X {method}"
+        out_target = "/dev/null" if is_head else body_quoted
+
+        # Build a hardened curl command: protocol restricted to http(s), body →
+        # file, response headers + status → file via -D, final URL on stdout.
         cmd = (
-            f"curl -sSL -g --fail"
+            f"curl -sSL -g {method_opt}"
             f" --proto '=http,https' --proto-redir '=http,https'"
             f"{opts}"
-            f" -D {header_quoted} -o {body_quoted}"
+            f" -D {header_quoted} -o {out_target}"
             f" -w '%{{url_effective}}'"
             f" -- {shlex.quote(url)}"
         )
-        if max_bytes is not None:
+        if max_bytes is not None and not is_head:
             cmd += f" && head -c {max_bytes} {body_quoted} > {part_quoted} && mv -f {part_quoted} {body_quoted}"
 
         # Give curl a few extra seconds beyond its own --max-time so the
@@ -339,19 +383,25 @@ class PosixShellSandbox(Sandbox, ABC):
             try:
                 result = await self.execute(cmd, timeout=exec_timeout, **kwargs)
             except SandboxTimeoutError as exc:
-                raise SandboxFetchError(f"fetch timed out after {timeout}s") from exc
+                raise SandboxHttpError(f"request timed out after {timeout}s") from exc
             if result.exit_code != 0:
-                raise SandboxFetchError(result.stderr.strip() or f"curl exited with code {result.exit_code}")
+                raise SandboxHttpError(result.stderr.strip() or f"curl exited with code {result.exit_code}")
 
             resolved_url = result.stdout.strip() or url
             raw_headers = (await self.read_file(header_file)).decode("utf-8", errors="replace")
-            response_headers = _parse_header_dump(raw_headers)
-            body = await self.read_file(body_file)
+            status, status_text, response_headers = _parse_status_and_headers(raw_headers)
+            response_body = b"" if is_head else await self.read_file(body_file)
         finally:
             with contextlib.suppress(Exception):
                 await self.execute(
-                    f"rm -f {body_quoted} {part_quoted} {header_quoted}",
+                    f"rm -f {body_quoted} {part_quoted} {header_quoted} {data_quoted}",
                     timeout=10,
                 )
 
-        return FetchResult(url=resolved_url, headers=response_headers, body=body)
+        return HttpResult(
+            status=status,
+            status_text=status_text,
+            resolved_url=resolved_url,
+            headers=response_headers,
+            body=response_body,
+        )

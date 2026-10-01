@@ -25,8 +25,8 @@ class SandboxTimeoutError(TimeoutError):
         self.stderr = stderr
 
 
-class SandboxFetchError(RuntimeError):
-    """Raised when :meth:`~strands.sandbox.base.Sandbox.fetch` fails."""
+class SandboxHttpError(RuntimeError):
+    """Raised when :meth:`~strands.sandbox.base.Sandbox.request` fails."""
 
 
 class SandboxPathNotFoundError(FileNotFoundError):

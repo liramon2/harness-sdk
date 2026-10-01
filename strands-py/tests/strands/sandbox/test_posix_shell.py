@@ -22,14 +22,14 @@ import pytest
 
 from strands.sandbox import (
     ExecutionResult,
-    FetchResult,
     FileInfo,
+    HttpResult,
     PosixShellSandbox,
     StreamChunk,
 )
-from strands.sandbox.errors import SandboxFetchError, SandboxPathNotFoundError
+from strands.sandbox.errors import SandboxHttpError, SandboxPathNotFoundError
 from strands.sandbox.posix_shell import (
-    _parse_header_dump,
+    _parse_status_and_headers,
     build_shell_env_prefix,
     validate_env_keys,
 )
@@ -611,14 +611,15 @@ def test_file_info_defaults():
     assert info.size is None
 
 
-class _MockFetchSandbox:
-    """Mock implementing execute + read_file for fetch() tests."""
+class _MockHttpSandbox:
+    """Mock implementing execute + read_file + write_file for request() tests."""
 
     def __init__(self, *, stdout="https://example.com", stderr="", exit_code=0, headers=None, body=None):
         self._result = ExecutionResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
         self._headers = headers or b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
         self._body = body or b"<html><body>Hello</body></html>"
         self.commands: list[str] = []
+        self.written: dict[str, bytes] = {}
 
     async def execute(self, command, **kwargs):
         self.commands.append(command)
@@ -629,34 +630,41 @@ class _MockFetchSandbox:
     async def read_file(self, path, **kwargs):
         if path.endswith(".headers"):
             return self._headers
-        if "/tmp/strands-fetch-" in path:
+        if "/tmp/strands-http-" in path:
             return self._body
         raise FileNotFoundError(path)
 
+    async def write_file(self, path, content, **kwargs):
+        self.written[path] = content
 
-class TestFetch:
+
+class TestRequest:
     @pytest.mark.asyncio
-    async def test_successful_fetch(self):
-        sb = _MockFetchSandbox()
-        result = await PosixShellSandbox.fetch(sb, "https://example.com")
+    async def test_successful_request(self):
+        sb = _MockHttpSandbox()
+        result = await PosixShellSandbox.request(sb, "GET", "https://example.com")
 
-        assert result == FetchResult(
-            url="https://example.com",
+        assert result == HttpResult(
+            status=200,
+            status_text="OK",
+            resolved_url="https://example.com",
             headers={"content-type": "text/html; charset=utf-8"},
             body=b"<html><body>Hello</body></html>",
         )
 
-        # Verify hardened curl flags.
+        # Verify hardened curl flags. No --fail: error statuses are reported.
         cmd = sb.commands[0]
-        assert "curl -sSL -g --fail" in cmd
+        assert "curl -sSL -g -X GET" in cmd
+        assert "--fail" not in cmd
         assert "--proto '=http,https'" in cmd
         assert "-D " in cmd and "-o " in cmd
 
     @pytest.mark.asyncio
     async def test_timeout_and_max_bytes_and_headers(self):
-        sb = _MockFetchSandbox()
-        await PosixShellSandbox.fetch(
+        sb = _MockHttpSandbox()
+        await PosixShellSandbox.request(
             sb,
+            "GET",
             "https://example.com",
             max_bytes=1024,
             timeout=15,
@@ -669,17 +677,83 @@ class TestFetch:
 
     @pytest.mark.asyncio
     async def test_no_timeout_no_max_bytes(self):
-        sb = _MockFetchSandbox()
-        await PosixShellSandbox.fetch(sb, "https://example.com")
+        sb = _MockHttpSandbox()
+        await PosixShellSandbox.request(sb, "GET", "https://example.com")
         cmd = sb.commands[0]
         assert "--max-time" not in cmd
         assert "head -c" not in cmd
 
     @pytest.mark.asyncio
-    async def test_curl_failure_raises(self):
-        sb = _MockFetchSandbox(exit_code=22, stderr="curl: (22) 404")
-        with pytest.raises(SandboxFetchError, match="404"):
-            await PosixShellSandbox.fetch(sb, "https://example.com")
+    async def test_post_with_body_writes_data_file(self):
+        sb = _MockHttpSandbox()
+        await PosixShellSandbox.request(sb, "POST", "https://example.com", body='{"a": 1}')
+        # Body is written to a temp file (never placed on the command line)...
+        assert any(p.endswith(".data") for p in sb.written)
+        data_path = next(p for p in sb.written if p.endswith(".data"))
+        assert sb.written[data_path] == b'{"a": 1}'
+        # ...and fed to curl via --data-binary @file with the method set.
+        cmd = sb.commands[0]
+        assert "-X POST" in cmd
+        assert f"--data-binary @{shlex.quote(data_path)}" in cmd
+        assert '{"a": 1}' not in cmd
+
+    @pytest.mark.asyncio
+    async def test_bytes_body_sent_as_is(self):
+        sb = _MockHttpSandbox()
+        await PosixShellSandbox.request(sb, "PUT", "https://example.com", body=b"\x00\x01\x02")
+        data_path = next(p for p in sb.written if p.endswith(".data"))
+        assert sb.written[data_path] == b"\x00\x01\x02"
+
+    @pytest.mark.asyncio
+    async def test_no_body_writes_nothing_and_omits_data_flag(self):
+        sb = _MockHttpSandbox()
+        await PosixShellSandbox.request(sb, "GET", "https://example.com")
+        assert sb.written == {}
+        assert "--data-binary" not in sb.commands[0]
+
+    @pytest.mark.asyncio
+    async def test_head_uses_head_flag_and_empty_body(self):
+        sb = _MockHttpSandbox()
+        result = await PosixShellSandbox.request(sb, "HEAD", "https://example.com")
+        cmd = sb.commands[0]
+        # --head avoids curl hanging on a body the server never sends; the body
+        # goes to /dev/null and the response body is empty.
+        assert "--head" in cmd
+        assert "-X HEAD" not in cmd
+        assert "-o /dev/null" in cmd
+        assert result.status == 200
+        assert result.status_text == "OK"
+        assert result.body == b""
+        assert result.headers["content-type"] == "text/html; charset=utf-8"
+
+    @pytest.mark.asyncio
+    async def test_method_is_normalized_and_validated(self):
+        sb = _MockHttpSandbox()
+        await PosixShellSandbox.request(sb, "  patch  ", "https://example.com")
+        assert "-X PATCH" in sb.commands[0]
+
+        for method in ["GET;rm -rf /", "GET POST", "", "G-E-T", "POST!"]:
+            with pytest.raises(SandboxHttpError, match="method"):
+                await PosixShellSandbox.request(_MockHttpSandbox(), method, "https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_transport_failure_raises(self):
+        # Without --fail, HTTP error statuses no longer fail curl; only genuine
+        # transport errors (DNS, connection, size cap) make it exit non-zero.
+        sb = _MockHttpSandbox(exit_code=7, stderr="curl: (7) Failed to connect")
+        with pytest.raises(SandboxHttpError, match="connect"):
+            await PosixShellSandbox.request(sb, "GET", "https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_error_status_is_returned_not_raised(self):
+        sb = _MockHttpSandbox(
+            headers=b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\n",
+            body=b"nope",
+        )
+        result = await PosixShellSandbox.request(sb, "GET", "https://example.com/missing")
+        assert result.status == 404
+        assert result.status_text == "Not Found"
+        assert result.body == b"nope"
 
     @pytest.mark.asyncio
     async def test_rejects_unsafe_url_chars(self):
@@ -693,61 +767,83 @@ class TestFetch:
             "https://example.com/{path}",
             "",
         ]:
-            with pytest.raises(SandboxFetchError):
-                await PosixShellSandbox.fetch(_MockFetchSandbox(), url)
+            with pytest.raises(SandboxHttpError):
+                await PosixShellSandbox.request(_MockHttpSandbox(), "GET", url)
 
     @pytest.mark.asyncio
     async def test_rejects_non_http_scheme(self):
         for url in ["ftp://example.com", "file:///etc/passwd", "javascript:alert(1)"]:
-            with pytest.raises(SandboxFetchError, match="http\\(s\\)"):
-                await PosixShellSandbox.fetch(_MockFetchSandbox(), url)
+            with pytest.raises(SandboxHttpError, match="http\\(s\\)"):
+                await PosixShellSandbox.request(_MockHttpSandbox(), "GET", url)
 
     @pytest.mark.asyncio
     async def test_rejects_no_host(self):
-        with pytest.raises(SandboxFetchError, match="no host"):
-            await PosixShellSandbox.fetch(_MockFetchSandbox(), "http://")
+        with pytest.raises(SandboxHttpError, match="no host"):
+            await PosixShellSandbox.request(_MockHttpSandbox(), "GET", "http://")
 
     @pytest.mark.asyncio
     async def test_strips_url_whitespace(self):
-        sb = _MockFetchSandbox()
-        result = await PosixShellSandbox.fetch(sb, "  https://example.com  ")
-        assert result.url == "https://example.com"
+        sb = _MockHttpSandbox()
+        result = await PosixShellSandbox.request(sb, "GET", "  https://example.com  ")
+        assert result.resolved_url == "https://example.com"
 
     @pytest.mark.asyncio
     async def test_cleanup_runs(self):
         # Success
-        sb = _MockFetchSandbox()
-        await PosixShellSandbox.fetch(sb, "https://example.com")
+        sb = _MockHttpSandbox()
+        await PosixShellSandbox.request(sb, "GET", "https://example.com")
         assert sb.commands[-1].startswith("rm -f")
 
         # Failure
-        sb = _MockFetchSandbox(exit_code=1, stderr="fail")
-        with pytest.raises(SandboxFetchError):
-            await PosixShellSandbox.fetch(sb, "https://example.com")
+        sb = _MockHttpSandbox(exit_code=1, stderr="fail")
+        with pytest.raises(SandboxHttpError):
+            await PosixShellSandbox.request(sb, "GET", "https://example.com")
         assert sb.commands[-1].startswith("rm -f")
 
     @pytest.mark.asyncio
     async def test_resolved_url(self):
-        sb = _MockFetchSandbox(stdout="https://example.com/redirected")
-        result = await PosixShellSandbox.fetch(sb, "https://example.com")
-        assert result.url == "https://example.com/redirected"
+        sb = _MockHttpSandbox(stdout="https://example.com/redirected")
+        result = await PosixShellSandbox.request(sb, "GET", "https://example.com")
+        assert result.resolved_url == "https://example.com/redirected"
 
-        sb = _MockFetchSandbox(stdout="")
-        result = await PosixShellSandbox.fetch(sb, "https://example.com")
-        assert result.url == "https://example.com"
+        sb = _MockHttpSandbox(stdout="")
+        result = await PosixShellSandbox.request(sb, "GET", "https://example.com")
+        assert result.resolved_url == "https://example.com"
 
 
-class TestParseHeaderDump:
+class TestParseStatusAndHeaders:
     def test_basic_headers(self):
         raw = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nX-Custom: value\r\n\r\n"
-        assert _parse_header_dump(raw) == {"content-type": "text/html", "x-custom": "value"}
+        status, status_text, headers = _parse_status_and_headers(raw)
+        assert status == 200
+        assert status_text == "OK"
+        assert headers == {"content-type": "text/html", "x-custom": "value"}
+
+    def test_status_without_reason_phrase(self):
+        # HTTP/2 responses have no reason phrase.
+        status, status_text, headers = _parse_status_and_headers("HTTP/2 204\r\n\r\n")
+        assert status == 204
+        assert status_text == ""
+
+    def test_multi_word_reason_phrase(self):
+        status, status_text, _ = _parse_status_and_headers("HTTP/1.1 404 Not Found\r\n\r\n")
+        assert status == 404
+        assert status_text == "Not Found"
+
+    def test_repeated_headers_are_preserved(self):
+        raw = "HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\n"
+        _, _, headers = _parse_status_and_headers(raw)
+        assert headers["set-cookie"] == "a=1\nb=2"
 
     def test_redirect_chain_uses_final_response_only(self):
         raw = (
             "HTTP/1.1 301 Moved\r\nContent-Type: text/html\r\n\r\n"
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
         )
-        assert _parse_header_dump(raw)["content-type"] == "application/json"
+        status, status_text, headers = _parse_status_and_headers(raw)
+        assert status == 200
+        assert status_text == "OK"
+        assert headers["content-type"] == "application/json"
 
     def test_redirect_header_does_not_leak_when_final_omits_it(self):
         # 302 with Content-Type → 200 without Content-Type.
@@ -756,23 +852,29 @@ class TestParseHeaderDump:
             "HTTP/1.1 302 Found\r\nContent-Type: text/html\r\nLocation: /new\r\n\r\n"
             "HTTP/1.1 200 OK\r\nX-Request-Id: abc\r\n\r\n"
         )
-        result = _parse_header_dump(raw)
-        assert "content-type" not in result
-        assert result["x-request-id"] == "abc"
+        _, _, headers = _parse_status_and_headers(raw)
+        assert "content-type" not in headers
+        assert headers["x-request-id"] == "abc"
 
     def test_lowercases_keys_preserves_values(self):
         raw = "HTTP/1.1 200 OK\r\nContent-TYPE: Text/HTML; charset=UTF-8\r\n"
-        result = _parse_header_dump(raw)
-        assert "content-type" in result
-        assert result["content-type"] == "Text/HTML; charset=UTF-8"
+        _, _, headers = _parse_status_and_headers(raw)
+        assert "content-type" in headers
+        assert headers["content-type"] == "Text/HTML; charset=UTF-8"
 
     def test_colon_in_value(self):
         raw = "HTTP/1.1 200 OK\r\nLocation: https://example.com:8080/path\r\n"
-        assert _parse_header_dump(raw)["location"] == "https://example.com:8080/path"
+        _, _, headers = _parse_status_and_headers(raw)
+        assert headers["location"] == "https://example.com:8080/path"
 
     def test_empty_input(self):
-        assert _parse_header_dump("") == {}
+        status, status_text, headers = _parse_status_and_headers("")
+        assert status == 0
+        assert status_text == ""
+        assert headers == {}
 
     def test_lf_only(self):
         raw = "HTTP/1.1 200 OK\nContent-Type: text/html\n"
-        assert _parse_header_dump(raw) == {"content-type": "text/html"}
+        status, _, headers = _parse_status_and_headers(raw)
+        assert status == 200
+        assert headers == {"content-type": "text/html"}

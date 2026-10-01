@@ -28,7 +28,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from ..types.tools import AgentTool
-from .types import ExecutionResult, FetchResult, FileInfo, StreamChunk
+from .types import ExecutionResult, FileInfo, HttpResult, StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -200,30 +200,40 @@ class Sandbox(ABC):
         """
         ...
 
-    async def fetch(
+    async def request(
         self,
+        method: str,
         url: str,
         *,
-        max_bytes: int | None = None,
-        timeout: float | None = None,
         headers: dict[str, str] | None = None,
+        body: bytes | str | None = None,
+        timeout: float | None = None,
+        max_bytes: int | None = None,
         **kwargs: Any,
-    ) -> FetchResult:
-        """Fetch a URL via HTTP GET inside the sandbox.
+    ) -> HttpResult:
+        """Make an HTTP request inside the sandbox.
 
-        Optional because not every sandbox needs HTTP fetching.
+        Works with any HTTP method. Optional because not every sandbox needs
+        HTTP access.
 
         Args:
-            url: The http(s) URL to fetch.
-            max_bytes: Cap the response body to this many bytes. ``None`` means no limit.
-            timeout: Maximum execution time in seconds. ``None`` means no timeout.
+            method: HTTP method (e.g. ``GET``, ``POST``, ``PUT``, ``DELETE``,
+                ``PATCH``, ``HEAD``, ``OPTIONS``).
+            url: The http(s) URL to request.
             headers: Request headers.
+            body: Request body. ``str`` is sent as UTF-8; ``bytes`` is sent as-is.
+                ``None`` sends no body.
+            timeout: Maximum execution time in seconds. ``None`` means no timeout.
+            max_bytes: Cap the response body to this many bytes. ``None`` means no limit.
             **kwargs: Additional keyword arguments for forward compatibility.
 
+        Returns:
+            An :class:`HttpResult`. HTTP error statuses (4xx/5xx) are returned in ``status`` rather than raised.
+
         Raises:
-            SandboxFetchError: On network or transport errors.
+            SandboxHttpError: On network or transport errors.
         """
-        raise NotImplementedError(f"{type(self).__name__} does not implement fetch()")
+        raise NotImplementedError(f"{type(self).__name__} does not implement request()")
 
     # ---- Tool vending ----
 
