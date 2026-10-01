@@ -1,4 +1,4 @@
-"""Tests for multiagent spec resolution: axis types, resolve_spec, and default_builder."""
+"""Tests for multiagent spec resolution: axis types, _resolve_spec, and _default_builder."""
 
 import pytest
 
@@ -12,8 +12,8 @@ from strands.multiagent.spec import (
     Open,
     Option,
     Preset,
-    default_builder,
-    resolve_spec,
+    _default_builder,
+    _resolve_spec,
 )
 from strands.tools.decorator import tool
 
@@ -64,7 +64,7 @@ def test_resolve_spec_preset_applied_by_default():
         "presets": {"g": Preset(instructions="help", context="all", last_messages=5)},
         "default_preset": "g",
     }
-    assert resolve_spec({"task": "x"}, **axes) == AgentSpec(
+    assert _resolve_spec({"task": "x"}, **axes) == AgentSpec(
         task="x",
         agent_type="g",
         instructions="help",
@@ -77,16 +77,16 @@ def test_resolve_spec_preset_applied_by_default():
 def test_resolve_spec_unknown_agent_type_raises():
     axes = {**_AXES, "presets": {"g": Preset()}, "default_preset": "g"}
     with pytest.raises(ValueError, match="Unknown agent_type"):
-        resolve_spec({"task": "x", "agent_type": "nope"}, **axes)
+        _resolve_spec({"task": "x", "agent_type": "nope"}, **axes)
 
 
 def test_resolve_spec_agent_type_rejects_prototype_keys_null_and_non_strings():
     axes = {**_AXES, "presets": {"g": Preset()}, "default_preset": "g"}
     for bad in ["constructor", "toString", "__proto__", ["g"]]:
         with pytest.raises(ValueError, match="Unknown agent_type"):
-            resolve_spec({"task": "x", "agent_type": bad}, **axes)
+            _resolve_spec({"task": "x", "agent_type": bad}, **axes)
     # null (None) falls back to default preset instead of throwing
-    assert resolve_spec({"task": "x", "agent_type": None}, **axes) == AgentSpec(
+    assert _resolve_spec({"task": "x", "agent_type": None}, **axes) == AgentSpec(
         task="x",
         agent_type="g",
         tools=["read", "shell"],
@@ -96,7 +96,7 @@ def test_resolve_spec_agent_type_rejects_prototype_keys_null_and_non_strings():
 
 def test_resolve_spec_ad_hoc_instructions_suppress_default_preset():
     axes = {**_AXES, "presets": {"g": Preset(instructions="default")}, "default_preset": "g"}
-    assert resolve_spec({"task": "x", "instructions": "ad-hoc"}, **axes) == AgentSpec(
+    assert _resolve_spec({"task": "x", "instructions": "ad-hoc"}, **axes) == AgentSpec(
         task="x",
         instructions="ad-hoc",
         tools=["read", "shell"],
@@ -105,7 +105,7 @@ def test_resolve_spec_ad_hoc_instructions_suppress_default_preset():
 
 
 def test_resolve_spec_tools_clamped_and_last_messages_parsed():
-    assert resolve_spec({"task": "x", "tools": ["read", "write"], "last_messages": "3"}, **_AXES) == AgentSpec(
+    assert _resolve_spec({"task": "x", "tools": ["read", "write"], "last_messages": "3"}, **_AXES) == AgentSpec(
         task="x",
         tools=["read"],
         last_messages=3,
@@ -114,12 +114,12 @@ def test_resolve_spec_tools_clamped_and_last_messages_parsed():
 
 
 def test_resolve_spec_invalid_last_messages_becomes_none():
-    assert resolve_spec({"task": "x", "last_messages": "abc"}, **_AXES).last_messages is None
+    assert _resolve_spec({"task": "x", "last_messages": "abc"}, **_AXES).last_messages is None
 
 
 def test_resolve_spec_fixed_ignores_model_value():
     axes = {**_AXES, "instructions": Fixed("pinned")}
-    assert resolve_spec({"task": "x", "instructions": "override"}, **axes) == AgentSpec(
+    assert _resolve_spec({"task": "x", "instructions": "override"}, **axes) == AgentSpec(
         task="x",
         instructions="pinned",
         tools=["read", "shell"],
@@ -130,7 +130,7 @@ def test_resolve_spec_fixed_ignores_model_value():
 def test_resolve_spec_choice_maps_option_value():
     sentinel = object()
     axes = {**_AXES, "model": Choice([Option("smart", sentinel)])}
-    assert resolve_spec({"task": "x", "model": "smart"}, **axes).model is sentinel
+    assert _resolve_spec({"task": "x", "model": "smart"}, **axes).model is sentinel
 
 
 def test_default_builder_inherits_all_tools_when_spec_tools_is_none():
@@ -143,7 +143,7 @@ def test_default_builder_inherits_all_tools_when_spec_tools_is_none():
         """Write."""
 
     parent = Agent(tools=[read_tool, write_tool])
-    child = default_builder(parent)(AgentSpec(task="x"))
+    child = _default_builder(parent)(AgentSpec(task="x"))
     assert "read_tool" in child.tool_registry.registry
     assert "write_tool" in child.tool_registry.registry
 
@@ -158,7 +158,7 @@ def test_default_builder_resolves_tools_and_inherits_model():
         """Write."""
 
     parent = Agent(tools=[read_tool, write_tool])
-    child = default_builder(parent)(AgentSpec(task="x", tools=["read_tool"]))
+    child = _default_builder(parent)(AgentSpec(task="x", tools=["read_tool"]))
     assert "read_tool" in child.tool_registry.registry
     assert "write_tool" not in child.tool_registry.registry
     assert child.model is parent.model
@@ -177,7 +177,7 @@ def test_resolve_spec_preset_tools_clamped_to_choice():
         "default_preset": "worker",
         "tools": Choice(["read", "shell"], multiple=True),
     }
-    assert resolve_spec({"task": "x"}, **axes) == AgentSpec(
+    assert _resolve_spec({"task": "x"}, **axes) == AgentSpec(
         task="x",
         agent_type="worker",
         tools=["read"],
@@ -188,7 +188,7 @@ def test_resolve_spec_preset_tools_clamped_to_choice():
 def test_resolve_spec_fixed_tools_list():
     """Covers _resolve_list Fixed-list branch."""
     axes = {**_AXES, "tools": Fixed(["a", "b"])}
-    assert resolve_spec({"task": "x"}, **axes) == AgentSpec(
+    assert _resolve_spec({"task": "x"}, **axes) == AgentSpec(
         task="x",
         tools=["a", "b"],
         context="none",
@@ -198,7 +198,7 @@ def test_resolve_spec_fixed_tools_list():
 def test_resolve_spec_fixed_empty_list_is_not_none():
     """Fixed([]) must resolve to [] (no tools), not None (inherit all)."""
     axes = {**_AXES, "mcp_servers": Fixed([])}
-    assert resolve_spec({"task": "x"}, **axes) == AgentSpec(
+    assert _resolve_spec({"task": "x"}, **axes) == AgentSpec(
         task="x",
         mcp_servers=[],
         tools=["read", "shell"],

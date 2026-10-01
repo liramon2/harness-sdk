@@ -9,7 +9,7 @@ the parameters the model sees and govern what values it can supply:
 - ``Open``   — model supplies a free-form value.
 - ``Choice`` — model picks from a developer-supplied set.
 
-``resolve_spec`` merges model-supplied arguments, preset defaults, and axis policies
+``_resolve_spec`` merges model-supplied arguments, preset defaults, and axis policies
 into a fully resolved ``AgentSpec`` used to build child agents.  ``Inherit`` axes resolve
 to ``None`` (meaning "inherit all"); the class is a self-documenting marker.
 """
@@ -198,7 +198,7 @@ def _resolve_list(
     return None
 
 
-def resolve_spec(
+def _resolve_spec(
     model_input: Mapping[str, Any],
     *,
     presets: Mapping[str, Preset],
@@ -279,7 +279,7 @@ def resolve_spec(
     return spec
 
 
-def default_builder(parent: Agent) -> AgentBuilder:
+def _default_builder(parent: Agent) -> AgentBuilder:
     """A builder that creates an Agent inheriting the parent's model, tools, and MCP servers.
 
     Used by the vended multi-agent tools when no custom builder is supplied.

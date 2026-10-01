@@ -10,7 +10,7 @@
  * - {@link Open}    — model supplies a free-form value.
  * - {@link Choice}  — model picks from a developer-supplied set.
  *
- * {@link resolveSpec} merges model-supplied arguments, preset defaults, and axis policies
+ * {@link _resolveSpec} merges model-supplied arguments, preset defaults, and axis policies
  * into a fully resolved {@link AgentSpec} used to build child agents.  {@link Inherit} axes
  * resolve to `undefined` (meaning "inherit all"); the class is a self-documenting marker.
  */
@@ -298,7 +298,7 @@ function resolveList(
   return undefined
 }
 
-/** Axes passed to {@link resolveSpec}. */
+/** Axes passed to {@link _resolveSpec}. */
 export interface ResolveSpecAxes {
   presets: Record<string, Preset>
   defaultPreset: string | undefined
@@ -326,7 +326,7 @@ export interface ResolveSpecAxes {
  * @throws Error if `agent_type` is provided but not found in `axes.presets`.
  * @internal Not part of the public API.
  */
-export function resolveSpec(modelInput: Record<string, unknown>, axes: ResolveSpecAxes): AgentSpec {
+export function _resolveSpec(modelInput: Record<string, unknown>, axes: ResolveSpecAxes): AgentSpec {
   const { presets, defaultPreset, instructions } = axes
   const tools = axes.tools ?? new Inherit()
   const mcpServers = axes.mcpServers ?? new Inherit()
@@ -407,7 +407,7 @@ export function resolveSpec(modelInput: Record<string, unknown>, axes: ResolveSp
  * @returns An {@link AgentBuilder} that creates configured child agents from a spec.
  * @internal Not part of the public API.
  */
-export function defaultBuilder(parent: Agent): AgentBuilder {
+export function _defaultBuilder(parent: Agent): AgentBuilder {
   return (spec: AgentSpec): Agent => {
     const parentTools: Map<string, Tool> = new Map()
     const mcpClients: Map<string, McpClient> = new Map()
