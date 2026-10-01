@@ -19,16 +19,13 @@ import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
-
-import httpx
 
 from .base import Sandbox
 from .constants import LANGUAGE_PATTERN
-from .errors import SandboxFetchError, SandboxPathNotFoundError
+from .errors import SandboxPathNotFoundError
 from .posix_shell import build_shell_env_prefix
 from .stream_process import _stream_process
-from .types import ExecutionResult, FetchResult, FileInfo, StreamChunk
+from .types import ExecutionResult, FileInfo, StreamChunk
 
 
 class NotASandboxLocalEnvironment(Sandbox):
@@ -208,47 +205,3 @@ class NotASandboxLocalEnvironment(Sandbox):
                 except OSError:
                     results.append(FileInfo(name=entry.name))
         return results
-
-    async def fetch(
-        self,
-        url: str,
-        *,
-        max_bytes: int | None = None,
-        timeout: float | None = None,
-        headers: dict[str, str] | None = None,
-        **kwargs: Any,
-    ) -> FetchResult:
-        """Fetch a URL with httpx on the host.
-
-        ``max_bytes`` is enforced by streaming: reading stops as soon as
-        the cap is reached and the connection is closed.
-        """
-        url = url.strip()
-        parts = urlparse(url)
-        if parts.scheme not in ("http", "https"):
-            raise SandboxFetchError(f"fetch only supports http(s) URLs, got {url!r}.")
-        if not parts.hostname:
-            raise SandboxFetchError(f"fetch URL has no host: {url!r}.")
-
-        try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
-                async with client.stream("GET", url, headers=headers or {}) as response:
-                    response.raise_for_status()
-                    chunks: list[bytes] = []
-                    total = 0
-                    async for chunk in response.aiter_bytes():
-                        total += len(chunk)
-                        chunks.append(chunk)
-                        if max_bytes is not None and total >= max_bytes:
-                            break
-                    body = b"".join(chunks)
-                    if max_bytes is not None:
-                        body = body[:max_bytes]
-                    result_url = str(response.url)
-                    result_headers = {k: v for k, v in response.headers.items()}
-        except httpx.HTTPStatusError as exc:
-            raise SandboxFetchError(f"HTTP {exc.response.status_code} for {url}") from exc
-        except (httpx.TimeoutException, httpx.RequestError) as exc:
-            raise SandboxFetchError(str(exc)) from exc
-
-        return FetchResult(url=result_url, headers=result_headers, body=body)
