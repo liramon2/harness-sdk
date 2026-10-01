@@ -9,19 +9,27 @@ Mirrors ``strands-ts/src/sandbox/posix-shell.ts``.
 """
 
 import base64
+import contextlib
 import logging
+import re
 import shlex
 import uuid
 from abc import ABC
 from collections.abc import AsyncGenerator
 from typing import Any
+from urllib.parse import urlparse
 
 from .base import Sandbox
 from .constants import ENV_KEY_PATTERN, LANGUAGE_PATTERN
-from .errors import SandboxPathNotFoundError
-from .types import ExecutionResult, FileInfo, StreamChunk
+from .errors import SandboxFetchError, SandboxPathNotFoundError, SandboxTimeoutError
+from .types import ExecutionResult, FetchResult, FileInfo, StreamChunk
 
 logger = logging.getLogger(__name__)
+
+# The characters RFC 3986 allows anywhere in a URL.  Anything outside this
+# set (whitespace, quotes, control characters, non-ASCII) is rejected before
+# the URL reaches a shell command.  Security-critical for the curl transport.
+_URL_CHARS = re.compile(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 
 
 def validate_env_keys(env: dict[str, str]) -> None:
@@ -72,6 +80,35 @@ def build_shell_env_prefix(env: dict[str, str] | None = None) -> str:
 def _eof_marker() -> str:
     """Generate a unique heredoc EOF marker, mirroring the TS ``STRANDS_EOF_`` token."""
     return f"STRANDS_EOF_{uuid.uuid4().hex[:16]}"
+
+
+def _parse_header_dump(raw: str) -> dict[str, str]:
+    r"""Parse a curl ``-D`` header dump into ``{lowered_name: value}``.
+
+    Curl dumps headers for every hop in a redirect chain, separated by blank
+    lines. Only the final response is parsed so that stale headers from
+    intermediate redirects don't leak through.
+    """
+    # Split on blank lines, take the last non-empty block.
+    blocks = re.split(r"\n\s*\n", raw.replace("\r\n", "\n"))
+    last_block = ""
+    for block in reversed(blocks):
+        if block.strip():
+            last_block = block
+            break
+
+    result: dict[str, str] = {}
+    for line in last_block.split("\n"):
+        line = line.strip()
+        if not line or line.upper().startswith("HTTP/"):
+            continue
+        colon = line.find(":")
+        if colon < 1:
+            continue
+        name = line[:colon].strip().lower()
+        value = line[colon + 1 :].strip()
+        result[name] = value
+    return result
 
 
 class PosixShellSandbox(Sandbox, ABC):
@@ -239,3 +276,82 @@ class PosixShellSandbox(Sandbox, ABC):
             if name:
                 entries.append(FileInfo(name=name, is_dir=is_dir))
         return entries
+
+    async def fetch(
+        self,
+        url: str,
+        *,
+        max_bytes: int | None = None,
+        timeout: float | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> FetchResult:
+        """Fetch a URL with ``curl`` inside the sandbox.
+
+        ``max_bytes`` is rejected early when ``Content-Length`` is known and
+        truncated for chunked responses.
+        """
+        url = url.strip()
+        if not _URL_CHARS.fullmatch(url):
+            raise SandboxFetchError(
+                "fetch URLs may only contain the characters RFC 3986 allows; "
+                "percent-encode spaces and non-ASCII characters (and punycode the host) and retry."
+            )
+        parts = urlparse(url)
+        if parts.scheme not in ("http", "https"):
+            raise SandboxFetchError(f"fetch only supports http(s) URLs, got {url!r}.")
+        if not parts.hostname:
+            raise SandboxFetchError(f"fetch URL has no host: {url!r}.")
+
+        tag = uuid.uuid4().hex
+        body_file = f"/tmp/strands-fetch-{tag}"
+        header_file = f"/tmp/strands-fetch-{tag}.headers"
+        body_quoted = shlex.quote(body_file)
+        header_quoted = shlex.quote(header_file)
+        part_quoted = shlex.quote(body_file + ".part")
+
+        # Build a hardened curl command: protocol restricted to http(s),
+        # body → file, response headers → file via -D, final URL on stdout.
+        opts = ""
+        if timeout is not None:
+            opts += f" --max-time {timeout}"
+        if max_bytes is not None:
+            opts += f" --max-filesize {max_bytes}"
+        if headers:
+            for n, v in headers.items():
+                opts += f" -H {shlex.quote(f'{n}: {v}')}"
+        cmd = (
+            f"curl -sSL -g --fail"
+            f" --proto '=http,https' --proto-redir '=http,https'"
+            f"{opts}"
+            f" -D {header_quoted} -o {body_quoted}"
+            f" -w '%{{url_effective}}'"
+            f" -- {shlex.quote(url)}"
+        )
+        if max_bytes is not None:
+            cmd += f" && head -c {max_bytes} {body_quoted} > {part_quoted} && mv -f {part_quoted} {body_quoted}"
+
+        # Give curl a few extra seconds beyond its own --max-time so the
+        # sandbox kills it only if curl itself hangs.
+        exec_timeout = (timeout + 5) if timeout is not None else None
+
+        try:
+            try:
+                result = await self.execute(cmd, timeout=exec_timeout, **kwargs)
+            except SandboxTimeoutError as exc:
+                raise SandboxFetchError(f"fetch timed out after {timeout}s") from exc
+            if result.exit_code != 0:
+                raise SandboxFetchError(result.stderr.strip() or f"curl exited with code {result.exit_code}")
+
+            resolved_url = result.stdout.strip() or url
+            raw_headers = (await self.read_file(header_file)).decode("utf-8", errors="replace")
+            response_headers = _parse_header_dump(raw_headers)
+            body = await self.read_file(body_file)
+        finally:
+            with contextlib.suppress(Exception):
+                await self.execute(
+                    f"rm -f {body_quoted} {part_quoted} {header_quoted}",
+                    timeout=10,
+                )
+
+        return FetchResult(url=resolved_url, headers=response_headers, body=body)

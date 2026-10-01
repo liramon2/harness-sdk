@@ -7,11 +7,13 @@ filesystem directly. These require a POSIX shell, so they are skipped on Windows
 
 import os
 import sys
+from unittest.mock import patch
 
+import httpx
 import pytest
 
 from strands.sandbox import FileInfo
-from strands.sandbox.errors import SandboxPathNotFoundError
+from strands.sandbox.errors import SandboxFetchError, SandboxPathNotFoundError
 from strands.sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell required")
@@ -178,3 +180,87 @@ async def test_absolute_path_written_as_is(sandbox, tmp_path):
     file = str(tmp_path / "abs.txt")
     await sandbox.write_text(file, "absolute")
     assert (tmp_path / "abs.txt").read_text() == "absolute"
+
+
+# ---- fetch (httpx on host) ----
+
+_HTTPX_CLIENT_PATH = "strands.sandbox.not_a_sandbox_local_environment.httpx.AsyncClient"
+
+
+def _mock_client(handler):
+    """Return a factory that ignores kwargs and returns a mock-transport client."""
+    real_client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+
+    def factory(**kwargs):
+        return real_client
+
+    return factory
+
+
+class TestFetch:
+    @pytest.mark.asyncio
+    async def test_successful_fetch(self, sandbox):
+        def handler(request):
+            return httpx.Response(200, headers={"content-type": "text/html"}, text="<h1>Hello</h1>")
+
+        with patch(_HTTPX_CLIENT_PATH, _mock_client(handler)):
+            result = await sandbox.fetch("https://example.com/")
+
+        assert result.body == b"<h1>Hello</h1>"
+        assert result.headers["content-type"] == "text/html"
+
+    @pytest.mark.asyncio
+    async def test_max_bytes_truncates(self, sandbox):
+        def handler(request):
+            return httpx.Response(200, text="x" * 1000)
+
+        with patch(_HTTPX_CLIENT_PATH, _mock_client(handler)):
+            result = await sandbox.fetch("https://example.com/big", max_bytes=100)
+
+        assert len(result.body) == 100
+
+    @pytest.mark.asyncio
+    async def test_http_error_raises(self, sandbox):
+        def handler(request):
+            return httpx.Response(404, text="Not Found")
+
+        with patch(_HTTPX_CLIENT_PATH, _mock_client(handler)):
+            with pytest.raises(SandboxFetchError, match="404"):
+                await sandbox.fetch("https://example.com/missing")
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises(self, sandbox):
+        def handler(request):
+            raise httpx.ReadTimeout("timed out")
+
+        with patch(_HTTPX_CLIENT_PATH, _mock_client(handler)):
+            with pytest.raises(SandboxFetchError, match="timed out"):
+                await sandbox.fetch("https://example.com/slow")
+
+    @pytest.mark.asyncio
+    async def test_connection_error_raises(self, sandbox):
+        def handler(request):
+            raise httpx.ConnectError("refused")
+
+        with patch(_HTTPX_CLIENT_PATH, _mock_client(handler)):
+            with pytest.raises(SandboxFetchError, match="refused"):
+                await sandbox.fetch("https://example.com/down")
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_http_scheme(self, sandbox):
+        with pytest.raises(SandboxFetchError, match="http\\(s\\)"):
+            await sandbox.fetch("ftp://example.com")
+
+    @pytest.mark.asyncio
+    async def test_rejects_no_host(self, sandbox):
+        with pytest.raises(SandboxFetchError, match="no host"):
+            await sandbox.fetch("http://")
+
+    @pytest.mark.asyncio
+    async def test_strips_whitespace(self, sandbox):
+        def handler(request):
+            return httpx.Response(200, text="ok")
+
+        with patch(_HTTPX_CLIENT_PATH, _mock_client(handler)):
+            result = await sandbox.fetch("  https://example.com  ")
+        assert result.body == b"ok"

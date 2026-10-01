@@ -22,12 +22,14 @@ import pytest
 
 from strands.sandbox import (
     ExecutionResult,
+    FetchResult,
     FileInfo,
     PosixShellSandbox,
     StreamChunk,
 )
-from strands.sandbox.errors import SandboxPathNotFoundError
+from strands.sandbox.errors import SandboxFetchError, SandboxPathNotFoundError
 from strands.sandbox.posix_shell import (
+    _parse_header_dump,
     build_shell_env_prefix,
     validate_env_keys,
 )
@@ -607,3 +609,170 @@ def test_file_info_defaults():
     info = FileInfo(name="x")
     assert info.is_dir is None
     assert info.size is None
+
+
+class _MockFetchSandbox:
+    """Mock implementing execute + read_file for fetch() tests."""
+
+    def __init__(self, *, stdout="https://example.com", stderr="", exit_code=0, headers=None, body=None):
+        self._result = ExecutionResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
+        self._headers = headers or b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+        self._body = body or b"<html><body>Hello</body></html>"
+        self.commands: list[str] = []
+
+    async def execute(self, command, **kwargs):
+        self.commands.append(command)
+        if command.startswith("rm "):
+            return ExecutionResult(exit_code=0, stdout="", stderr="")
+        return self._result
+
+    async def read_file(self, path, **kwargs):
+        if path.endswith(".headers"):
+            return self._headers
+        if "/tmp/strands-fetch-" in path:
+            return self._body
+        raise FileNotFoundError(path)
+
+
+class TestFetch:
+    @pytest.mark.asyncio
+    async def test_successful_fetch(self):
+        sb = _MockFetchSandbox()
+        result = await PosixShellSandbox.fetch(sb, "https://example.com")
+
+        assert result == FetchResult(
+            url="https://example.com",
+            headers={"content-type": "text/html; charset=utf-8"},
+            body=b"<html><body>Hello</body></html>",
+        )
+
+        # Verify hardened curl flags.
+        cmd = sb.commands[0]
+        assert "curl -sSL -g --fail" in cmd
+        assert "--proto '=http,https'" in cmd
+        assert "-D " in cmd and "-o " in cmd
+
+    @pytest.mark.asyncio
+    async def test_timeout_and_max_bytes_and_headers(self):
+        sb = _MockFetchSandbox()
+        await PosixShellSandbox.fetch(
+            sb,
+            "https://example.com",
+            max_bytes=1024,
+            timeout=15,
+            headers={"X-Key": "val"},
+        )
+        cmd = sb.commands[0]
+        assert "--max-time 15" in cmd
+        assert "head -c 1024" in cmd
+        assert "-H 'X-Key: val'" in cmd
+
+    @pytest.mark.asyncio
+    async def test_no_timeout_no_max_bytes(self):
+        sb = _MockFetchSandbox()
+        await PosixShellSandbox.fetch(sb, "https://example.com")
+        cmd = sb.commands[0]
+        assert "--max-time" not in cmd
+        assert "head -c" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_curl_failure_raises(self):
+        sb = _MockFetchSandbox(exit_code=22, stderr="curl: (22) 404")
+        with pytest.raises(SandboxFetchError, match="404"):
+            await PosixShellSandbox.fetch(sb, "https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_rejects_unsafe_url_chars(self):
+        """RFC 3986 character allowlist rejects shell-unsafe characters."""
+        for url in [
+            "https://example.com/path with spaces",
+            "https://example.com/café",
+            "https://example.com/`id`",
+            'https://example.com/"test"',
+            "https://example.com/path\nnewline",
+            "https://example.com/{path}",
+            "",
+        ]:
+            with pytest.raises(SandboxFetchError):
+                await PosixShellSandbox.fetch(_MockFetchSandbox(), url)
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_http_scheme(self):
+        for url in ["ftp://example.com", "file:///etc/passwd", "javascript:alert(1)"]:
+            with pytest.raises(SandboxFetchError, match="http\\(s\\)"):
+                await PosixShellSandbox.fetch(_MockFetchSandbox(), url)
+
+    @pytest.mark.asyncio
+    async def test_rejects_no_host(self):
+        with pytest.raises(SandboxFetchError, match="no host"):
+            await PosixShellSandbox.fetch(_MockFetchSandbox(), "http://")
+
+    @pytest.mark.asyncio
+    async def test_strips_url_whitespace(self):
+        sb = _MockFetchSandbox()
+        result = await PosixShellSandbox.fetch(sb, "  https://example.com  ")
+        assert result.url == "https://example.com"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_runs(self):
+        # Success
+        sb = _MockFetchSandbox()
+        await PosixShellSandbox.fetch(sb, "https://example.com")
+        assert sb.commands[-1].startswith("rm -f")
+
+        # Failure
+        sb = _MockFetchSandbox(exit_code=1, stderr="fail")
+        with pytest.raises(SandboxFetchError):
+            await PosixShellSandbox.fetch(sb, "https://example.com")
+        assert sb.commands[-1].startswith("rm -f")
+
+    @pytest.mark.asyncio
+    async def test_resolved_url(self):
+        sb = _MockFetchSandbox(stdout="https://example.com/redirected")
+        result = await PosixShellSandbox.fetch(sb, "https://example.com")
+        assert result.url == "https://example.com/redirected"
+
+        sb = _MockFetchSandbox(stdout="")
+        result = await PosixShellSandbox.fetch(sb, "https://example.com")
+        assert result.url == "https://example.com"
+
+
+class TestParseHeaderDump:
+    def test_basic_headers(self):
+        raw = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nX-Custom: value\r\n\r\n"
+        assert _parse_header_dump(raw) == {"content-type": "text/html", "x-custom": "value"}
+
+    def test_redirect_chain_uses_final_response_only(self):
+        raw = (
+            "HTTP/1.1 301 Moved\r\nContent-Type: text/html\r\n\r\n"
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+        )
+        assert _parse_header_dump(raw)["content-type"] == "application/json"
+
+    def test_redirect_header_does_not_leak_when_final_omits_it(self):
+        # 302 with Content-Type → 200 without Content-Type.
+        # The final response has no Content-Type, so it must not appear.
+        raw = (
+            "HTTP/1.1 302 Found\r\nContent-Type: text/html\r\nLocation: /new\r\n\r\n"
+            "HTTP/1.1 200 OK\r\nX-Request-Id: abc\r\n\r\n"
+        )
+        result = _parse_header_dump(raw)
+        assert "content-type" not in result
+        assert result["x-request-id"] == "abc"
+
+    def test_lowercases_keys_preserves_values(self):
+        raw = "HTTP/1.1 200 OK\r\nContent-TYPE: Text/HTML; charset=UTF-8\r\n"
+        result = _parse_header_dump(raw)
+        assert "content-type" in result
+        assert result["content-type"] == "Text/HTML; charset=UTF-8"
+
+    def test_colon_in_value(self):
+        raw = "HTTP/1.1 200 OK\r\nLocation: https://example.com:8080/path\r\n"
+        assert _parse_header_dump(raw)["location"] == "https://example.com:8080/path"
+
+    def test_empty_input(self):
+        assert _parse_header_dump("") == {}
+
+    def test_lf_only(self):
+        raw = "HTTP/1.1 200 OK\nContent-Type: text/html\n"
+        assert _parse_header_dump(raw) == {"content-type": "text/html"}

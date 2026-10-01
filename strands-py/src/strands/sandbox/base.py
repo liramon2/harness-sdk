@@ -28,7 +28,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from ..types.tools import AgentTool
-from .types import ExecutionResult, FileInfo, StreamChunk
+from .types import ExecutionResult, FetchResult, FileInfo, StreamChunk
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +199,31 @@ class Sandbox(ABC):
             FileNotFoundError: If the directory does not exist.
         """
         ...
+
+    async def fetch(
+        self,
+        url: str,
+        *,
+        max_bytes: int | None = None,
+        timeout: float | None = None,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> FetchResult:
+        """Fetch a URL via HTTP GET inside the sandbox.
+
+        Optional because not every sandbox needs HTTP fetching.
+
+        Args:
+            url: The http(s) URL to fetch.
+            max_bytes: Cap the response body to this many bytes. ``None`` means no limit.
+            timeout: Maximum execution time in seconds. ``None`` means no timeout.
+            headers: Request headers.
+            **kwargs: Additional keyword arguments for forward compatibility.
+
+        Raises:
+            SandboxFetchError: On network or transport errors.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement fetch()")
 
     # ---- Tool vending ----
 

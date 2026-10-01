@@ -85,3 +85,18 @@ class ExecutionResult:
     stdout: str
     stderr: str
     output_files: list[OutputFile] = field(default_factory=list)
+
+
+@dataclass
+class FetchResult:
+    """Result of an HTTP fetch inside a sandbox.
+
+    Attributes:
+        url: Final URL after redirects.
+        headers: Response headers with lowercased keys.
+        body: Raw response body bytes.
+    """
+
+    url: str
+    headers: dict[str, str]
+    body: bytes

@@ -25,6 +25,10 @@ class SandboxTimeoutError(TimeoutError):
         self.stderr = stderr
 
 
+class SandboxFetchError(RuntimeError):
+    """Raised when :meth:`~strands.sandbox.base.Sandbox.fetch` fails."""
+
+
 class SandboxPathNotFoundError(FileNotFoundError):
     """Raised by :meth:`~strands.sandbox.base.Sandbox.list_files` when the path does not exist.
 
