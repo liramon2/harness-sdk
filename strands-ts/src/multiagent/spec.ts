@@ -22,9 +22,6 @@ import type { McpClient } from '../mcp/index.js'
 import type { Tool } from '../tools/tool.js'
 import { McpTool } from '../tools/mcp-tool.js'
 
-/** Valid values for the `context` axis. */
-export type ContextMode = 'none' | 'all' | 'no_tools'
-
 /** Turns a resolved spec into a child agent, built the way the parent was. */
 export type AgentBuilder = (spec: AgentSpec) => Agent
 
@@ -161,8 +158,6 @@ export interface PresetOptions {
   instructions?: string
   tools?: readonly string[]
   model?: Model | ModelRouter | string
-  context?: ContextMode
-  lastMessages?: number
   description?: string
 }
 
@@ -173,8 +168,6 @@ export class Preset {
   readonly instructions: string | undefined
   readonly tools: readonly string[] | undefined
   readonly model: Model | ModelRouter | string | undefined
-  readonly context: ContextMode
-  readonly lastMessages: number | undefined
   readonly description: string
 
   /**
@@ -184,40 +177,32 @@ export class Preset {
     this.instructions = options.instructions
     this.tools = options.tools
     this.model = options.model
-    this.context = options.context ?? 'none'
-    this.lastMessages = options.lastMessages
     this.description = options.description ?? ''
     Object.freeze(this)
   }
 }
 
 /**
- * Resolved child configuration handed to the builder: config merged with the model's arguments.
+ * Resolved child configuration handed to the builder.
  */
 export class AgentSpec {
   name: string | undefined
-  task: string
   agentType: string | undefined
   instructions: string | undefined
   tools: string[] | undefined
   mcpServers: string[] | undefined
   model: Model | ModelRouter | string | undefined
-  context: ContextMode
-  lastMessages: number | undefined
 
   /**
    * @param data - Partial spec fields; unset fields receive safe defaults.
    */
   constructor(data: Partial<AgentSpec> = {}) {
     this.name = data.name
-    this.task = data.task ?? ''
     this.agentType = data.agentType
     this.instructions = data.instructions
     this.tools = data.tools
     this.mcpServers = data.mcpServers
     this.model = data.model
-    this.context = data.context ?? 'none'
-    this.lastMessages = data.lastMessages
   }
 }
 
@@ -309,8 +294,6 @@ export interface ResolveSpecAxes {
   mcpServers?: Choice | Fixed | Inherit
   /** Defaults to {@link Inherit} when omitted. */
   model?: Inherit | Choice | Fixed
-  /** Defaults to `Fixed('none')` when omitted. */
-  context?: Fixed | Choice
 }
 
 /**
@@ -322,7 +305,7 @@ export interface ResolveSpecAxes {
  *
  * @param modelInput - Key/value pairs supplied by the model's tool call.
  * @param axes - Axis policies, presets, and the default preset name.
- * @returns A fully resolved {@link AgentSpec}.
+ * @returns The resolved {@link AgentSpec}.
  * @throws Error if `agent_type` is provided but not found in `axes.presets`.
  * @internal Not part of the public API.
  */
@@ -331,9 +314,7 @@ export function _resolveSpec(modelInput: Record<string, unknown>, axes: ResolveS
   const tools = axes.tools ?? new Inherit()
   const mcpServers = axes.mcpServers ?? new Inherit()
   const model = axes.model ?? new Inherit()
-  const context = axes.context ?? new Fixed('none')
 
-  const task = String(modelInput['task'] ?? '')
   const name = modelInput['name'] as string | undefined
 
   // agent_type is a closed enum: a provided value must be an exact preset name.
@@ -360,7 +341,6 @@ export function _resolveSpec(modelInput: Record<string, unknown>, axes: ResolveS
 
   const spec = new AgentSpec({
     name: name !== undefined ? String(name) : undefined,
-    task,
     agentType,
   })
 
@@ -373,24 +353,6 @@ export function _resolveSpec(modelInput: Record<string, unknown>, axes: ResolveS
 
   spec.model = resolveScalar(modelInput['model'] ?? UNSET, model, preset?.model) as
     Model | ModelRouter | string | undefined
-
-  const contextVal = resolveScalar(modelInput['context'] ?? UNSET, context, preset?.context)
-  spec.context = (contextVal as ContextMode) ?? 'none'
-
-  // last_messages — always available when context is not "none", but optional.
-  // Preset provides the default; a valid model-supplied value overrides it.
-  if (preset?.lastMessages !== undefined) {
-    spec.lastMessages = preset.lastMessages
-  }
-  if ('last_messages' in modelInput) {
-    const raw = modelInput['last_messages']
-    if (typeof raw === 'string' || typeof raw === 'number') {
-      const parsed = typeof raw === 'string' && raw.trim() === '' ? NaN : Number(raw)
-      if (Number.isInteger(parsed) && parsed >= 0) {
-        spec.lastMessages = parsed
-      }
-    }
-  }
 
   return spec
 }

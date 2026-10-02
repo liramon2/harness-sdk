@@ -23,7 +23,6 @@ const AXES: ResolveSpecAxes = {
   tools: new Choice(['read', 'shell'], true),
   mcpServers: new Inherit(),
   model: new Inherit(),
-  context: new Fixed('none'),
 }
 
 describe('Choice', () => {
@@ -75,17 +74,14 @@ describe('_resolveSpec', () => {
   it('applies preset by default', () => {
     const axes: ResolveSpecAxes = {
       ...AXES,
-      presets: { g: new Preset({ instructions: 'help', context: 'all', lastMessages: 5 }) },
+      presets: { g: new Preset({ instructions: 'help' }) },
       defaultPreset: 'g',
     }
     expect(_resolveSpec({ task: 'x' }, axes)).toEqual(
       new AgentSpec({
-        task: 'x',
         agentType: 'g',
         instructions: 'help',
         tools: ['read', 'shell'],
-        context: 'all',
-        lastMessages: 5,
       })
     )
   })
@@ -102,7 +98,7 @@ describe('_resolveSpec', () => {
     }
     // null falls back to default preset instead of throwing
     expect(_resolveSpec({ task: 'x', agent_type: null }, axes)).toEqual(
-      new AgentSpec({ task: 'x', agentType: 'g', tools: ['read', 'shell'], context: 'none' })
+      new AgentSpec({ agentType: 'g', tools: ['read', 'shell'] })
     )
   })
 
@@ -113,26 +109,18 @@ describe('_resolveSpec', () => {
       defaultPreset: 'g',
     }
     expect(_resolveSpec({ task: 'x', instructions: 'ad-hoc' }, axes)).toEqual(
-      new AgentSpec({ task: 'x', instructions: 'ad-hoc', tools: ['read', 'shell'], context: 'none' })
+      new AgentSpec({ instructions: 'ad-hoc', tools: ['read', 'shell'] })
     )
   })
 
-  it('clamps tools to allowed set and parses last_messages', () => {
-    expect(_resolveSpec({ task: 'x', tools: ['read', 'write'], last_messages: '3' }, AXES)).toEqual(
-      new AgentSpec({ task: 'x', tools: ['read'], lastMessages: 3, context: 'none' })
-    )
-  })
-
-  it('sets lastMessages to undefined for invalid input', () => {
-    for (const bad of ['abc', '3.5', '', ' ', null, [], false]) {
-      expect(_resolveSpec({ task: 'x', last_messages: bad }, AXES).lastMessages).toBeUndefined()
-    }
+  it('clamps tools to allowed set', () => {
+    expect(_resolveSpec({ task: 'x', tools: ['read', 'write'] }, AXES)).toEqual(new AgentSpec({ tools: ['read'] }))
   })
 
   it('Fixed ignores model-supplied value', () => {
     const axes: ResolveSpecAxes = { ...AXES, instructions: new Fixed('pinned') }
     expect(_resolveSpec({ task: 'x', instructions: 'override' }, axes)).toEqual(
-      new AgentSpec({ task: 'x', instructions: 'pinned', tools: ['read', 'shell'], context: 'none' })
+      new AgentSpec({ instructions: 'pinned', tools: ['read', 'shell'] })
     )
   })
 
@@ -149,21 +137,17 @@ describe('_resolveSpec', () => {
       defaultPreset: 'worker',
       tools: new Choice(['read', 'shell'], true),
     }
-    expect(_resolveSpec({ task: 'x' }, axes)).toEqual(
-      new AgentSpec({ task: 'x', agentType: 'worker', tools: ['read'], context: 'none' })
-    )
+    expect(_resolveSpec({ task: 'x' }, axes)).toEqual(new AgentSpec({ agentType: 'worker', tools: ['read'] }))
   })
 
   it('resolves Fixed tools list', () => {
     const axes: ResolveSpecAxes = { ...AXES, tools: new Fixed(['a', 'b']) }
-    expect(_resolveSpec({ task: 'x' }, axes)).toEqual(new AgentSpec({ task: 'x', tools: ['a', 'b'], context: 'none' }))
+    expect(_resolveSpec({ task: 'x' }, axes)).toEqual(new AgentSpec({ tools: ['a', 'b'] }))
   })
 
   it('resolves Fixed([]) to empty array, not undefined', () => {
     const axes: ResolveSpecAxes = { ...AXES, mcpServers: new Fixed([]) }
-    expect(_resolveSpec({ task: 'x' }, axes)).toEqual(
-      new AgentSpec({ task: 'x', tools: ['read', 'shell'], mcpServers: [], context: 'none' })
-    )
+    expect(_resolveSpec({ task: 'x' }, axes)).toEqual(new AgentSpec({ tools: ['read', 'shell'], mcpServers: [] }))
   })
 })
 
@@ -181,7 +165,7 @@ describe('_defaultBuilder', () => {
 
   it('builds a child Agent that inherits the parent model and forwards spec.name', () => {
     const parent = new Agent({ model, printer: false })
-    const child = _defaultBuilder(parent)(new AgentSpec({ task: 'x', name: 'worker' }))
+    const child = _defaultBuilder(parent)(new AgentSpec({ name: 'worker' }))
     expect(child).toBeInstanceOf(Agent)
     expect(child.model).toBe(model)
     expect(child.name).toBe('worker')
@@ -192,7 +176,7 @@ describe('_defaultBuilder', () => {
     const shellTool = createMockTool('shell', () => 'ok')
     const parent = new Agent({ model, tools: [readTool, shellTool], printer: false })
 
-    const childToolNames = _defaultBuilder(parent)(new AgentSpec({ task: 'x' }))
+    const childToolNames = _defaultBuilder(parent)(new AgentSpec({}))
       .toolRegistry.list()
       .map((tool) => tool.name)
 
@@ -204,7 +188,7 @@ describe('_defaultBuilder', () => {
     const shellTool = createMockTool('shell', () => 'ok')
     const parent = new Agent({ model, tools: [readTool, shellTool], printer: false })
 
-    const childToolNames = _defaultBuilder(parent)(new AgentSpec({ task: 'x', tools: ['read', 'nonexistent'] }))
+    const childToolNames = _defaultBuilder(parent)(new AgentSpec({ tools: ['read', 'nonexistent'] }))
       .toolRegistry.list()
       .map((tool) => tool.name)
 

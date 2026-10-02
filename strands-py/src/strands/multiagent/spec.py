@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from ..agent import Agent
 from ..models import Model, ModelRouter
@@ -27,9 +27,6 @@ from ..tools.mcp import MCPClient
 from ..tools.mcp.mcp_agent_tool import MCPAgentTool
 
 logger = logging.getLogger(__name__)
-
-ContextMode = Literal["none", "all", "no_tools"]
-"""Type alias for the valid ``context`` axis values."""
 
 # The builder turns a resolved spec into a child agent, built the way the parent was.
 AgentBuilder = Callable[["AgentSpec"], "Agent"]
@@ -124,24 +121,19 @@ class Preset:
     instructions: str | None = None
     tools: Sequence[str] | None = None
     model: Model | ModelRouter | str | None = None
-    context: ContextMode = "none"
-    last_messages: int | None = None
     description: str = ""
 
 
 @dataclass
 class AgentSpec:
-    """The resolved child configuration handed to the builder: config + the model's arguments."""
+    """The resolved child configuration handed to the builder."""
 
     name: str | None = None
-    task: str = ""
     agent_type: str | None = None
     instructions: str | None = None
     tools: list[str] | None = None
     mcp_servers: list[str] | None = None
     model: Model | ModelRouter | str | None = None
-    context: ContextMode = "none"
-    last_messages: int | None = None
 
 
 def _resolve_scalar(
@@ -207,7 +199,6 @@ def _resolve_spec(
     tools: Choice | Fixed | Inherit | None = None,
     mcp_servers: Choice | Fixed | Inherit | None = None,
     model: Inherit | Choice | Fixed | None = None,
-    context: Fixed | Choice | None = None,
 ) -> AgentSpec:
     """Combine the model's arguments, the selected preset, and the fixed axes into a spec.
 
@@ -223,7 +214,9 @@ def _resolve_spec(
         tools: Axis policy for tool selection. Defaults to ``Inherit()`` when not supplied.
         mcp_servers: Axis policy for MCP server selection. Defaults to ``Inherit()`` when not supplied.
         model: Axis policy for model selection. Defaults to ``Inherit()`` when not supplied.
-        context: Axis policy for context sharing. Defaults to ``Fixed("none")`` when not supplied.
+
+    Returns:
+        The resolved ``AgentSpec`` (the child's configuration).
 
     Raises:
         ValueError: If ``agent_type`` is provided but not found in ``presets``.
@@ -234,9 +227,6 @@ def _resolve_spec(
         mcp_servers = Inherit()
     if model is None:
         model = Inherit()
-    if context is None:
-        context = Fixed("none")
-    task = str(model_input.get("task", ""))
     name = model_input.get("name")
 
     # agent_type is a closed enum: a provided value must be an exact preset name (absent = no role).
@@ -257,24 +247,13 @@ def _resolve_spec(
     preset = presets.get(agent_type) if agent_type else None
 
     # Combine the model inputs, axis policies, and presets into an agent spec
-    spec = AgentSpec(name=str(name) if name is not None else None, task=task, agent_type=agent_type)
+    spec = AgentSpec(name=str(name) if name is not None else None, agent_type=agent_type)
     spec.instructions = _resolve_scalar(
         model_input.get("instructions", _UNSET), instructions, preset.instructions if preset else None
     )
     spec.tools = _resolve_list(model_input.get("tools", _UNSET), tools, preset.tools if preset else None)
     spec.mcp_servers = _resolve_list(model_input.get("mcp_servers", _UNSET), mcp_servers)
     spec.model = _resolve_scalar(model_input.get("model", _UNSET), model, preset.model if preset else None)
-    val = _resolve_scalar(model_input.get("context", _UNSET), context, preset.context if preset else None)
-    spec.context = val if val is not None else "none"
-
-    # last_messages — always available when context is not "none", but optional.
-    if preset and preset.last_messages is not None:
-        spec.last_messages = preset.last_messages
-    if "last_messages" in model_input:
-        try:
-            spec.last_messages = int(model_input["last_messages"])
-        except (TypeError, ValueError):
-            pass
 
     return spec
 
