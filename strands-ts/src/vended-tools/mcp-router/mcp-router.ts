@@ -34,10 +34,15 @@ const mcpRouterInputSchema = z.object({
     .describe("Arguments to pass to the invoked tool. Used with 'call_tool'."),
 })
 
+/** Options for {@link makeMcpRouter}. */
 export interface MakeMcpRouterOptions {
+  /** Tool name exposed to the model. */
   name?: string
+  /** Tool description exposed to the model. */
   description?: string
+  /** Allowlisted MCP servers keyed by a developer-chosen name. Must not be empty. */
   servers: Record<string, McpServerConfig>
+  /** Maximum simultaneous open connections per agent. @defaultValue 10 */
   maxConnections?: number
 }
 
@@ -45,7 +50,7 @@ export interface MakeMcpRouterOptions {
  * Creates an MCP router tool bound to a developer-set server allowlist.
  *
  * Connections are scoped per agent and persist across invocations. They are closed
- * when the model calls `disconnect` or when the agent is garbage collected.
+ * when the model calls `disconnect` or when the agent is garbage collected (on a best-effort basis).
  *
  * @param options - Configuration options.
  * @returns A tool that manages MCP connections.
@@ -143,8 +148,8 @@ export function makeMcpRouter(options: MakeMcpRouterOptions): InvokableTool<McpR
 async function stopClient(client: McpClient): Promise<void> {
   try {
     await client.disconnect()
-  } catch {
-    logger.debug('failed to stop MCP client')
+  } catch (error) {
+    logger.debug(`error=<${error}> | failed to stop MCP client`)
   }
 }
 

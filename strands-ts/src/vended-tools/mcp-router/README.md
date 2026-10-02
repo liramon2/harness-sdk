@@ -2,7 +2,7 @@
 
 Connects to Model Context Protocol (MCP) servers at runtime to discover and invoke their tools.
 
-The factory takes a developer-set allowlist of servers; the model can only connect to servers on that list. Connections are scoped per agent and closed on `disconnect` or when the agent is garbage collected.
+The factory takes a developer-set allowlist of servers; the model can only connect to servers on that list. Connections are scoped per agent and closed on `disconnect` or when the agent is garbage collected (on a best-effort basis).
 
 ## ⚠️ Security Warning
 
