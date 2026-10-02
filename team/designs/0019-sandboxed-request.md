@@ -54,19 +54,40 @@ async def request(
     max_bytes: int | None = None,
     **kwargs: Any,
 ) -> HttpResult: ...
-```
 
-```python
 @dataclass
 class HttpResult:
-    status: int           # final status code (0 if unparseable)
+    status: int           # final status code (raise if unparseable)
     status_text: str      # reason phrase; "" when omitted
     resolved_url: str     # final URL after redirects
-    headers: dict[str, str]  # lowercased keys; repeated headers joined with "\n"
+    headers: dict[str, str]  # lowercased keys; repeated headers joined with ","
     body: bytes
 ```
 
-Transport failures (ex. DNS, connect, timeout, size cap) raise `SandboxHttpError`; HTTP error statuses (4xx/5xx) are returned in `status`, not raised, the shape both tools want. `PosixShellSandbox` provides a curl-based implementation on top of the shell primitives it already has, so any POSIX backend gets `request` for free. It treats the model-supplied method, URL, headers, and body as untrusted, and honors `timeout` and `max_bytes` so a response can't hang or flood the sandbox. Tools then call `sandbox.request(...)` instead of a host client when a sandbox is present.
+```ts
+async request(
+  method: string,
+  url: string,
+  options?: HttpRequestOptions,
+): Promise<HttpResult>
+
+interface HttpRequestOptions {
+  headers?: Record<string, string>
+  body?: Uint8Array | string
+  timeoutMs?: number
+  maxBytes?: number
+}
+
+interface HttpResult {
+  status: number
+  statusText: string
+  resolvedUrl: string
+  headers: Record<string, string>
+  body: Uint8Array
+}
+```
+
+Transport failures (ex. DNS, connect, timeout, size cap) raise `SandboxHttpError`; HTTP error statuses (4xx/5xx) are returned in `status`, not raised, the shape both tools want. `PosixShellSandbox` provides a curl-based implementation on top of the shell primitives it already has, so any POSIX backend gets `request` for free. It treats the model-supplied method, URL, headers, and body as untrusted, and honors `timeout` and `max_bytes` so a response can't hang or flood the sandbox. If those parameters are not specified (None), no timeout or byte cap is applied, similar to the other sandbox methods. Tools then call `sandbox.request(...)` instead of a host client when a sandbox is present.
 
 We implement `NotASandboxLocalEnvironment.request` with the current `httpx.client` (Python) / `fetch` (TS) implementations from the vended tools. We remove the `client` parameter from the Python `web_fetch` and `http_request` tools because the httpx client is not accessible from general sandboxes (ex. `PosixShellSandbox`). In its place, we add `max_bytes` to the `http_request` tool and `headers` to the `web_fetch` tool, to maintain compatibility with the base `request` interface. These tools always route to the agent sandbox. Therefore, `ToolContext` becomes mandatory in both tools (rather than optional like it is now), so developers cannot directly call these tools outside an agent.
 
@@ -82,7 +103,7 @@ We implement `NotASandboxLocalEnvironment.request` with the current `httpx.clien
 
 ### Approach 2: Keep host-side HTTP requests in vended tools
 
-Same as Appraoch 1, but we leave `NotASandboxLocalEnvironment.request` unimplemented, falling through to the base `NotImplementedError`. The current network-based tools (http_request, web_fetch) keep their own host-side transport via `httpx.client` and `fetch`. Both tools accept a new optional parameter called `transport`. It has two options: `direct` routes to the current httpx client / fetch implementations in the host process, while `sandbox` routes to the agent's sandbox and is the default.
+Same as Approach 1, but we leave `NotASandboxLocalEnvironment.request` unimplemented, falling through to the base `NotImplementedError`. The current network-based tools (http_request, web_fetch) keep their own host-side transport via `httpx.client` and `fetch`. Both tools accept a new optional parameter called `transport`. It has two options: `direct` routes to the current httpx client / fetch implementations in the host process, while `sandbox` routes to the agent's sandbox and is the default.
 
 This approach avoids breaking changes in the vended tools. However, it scatters HTTP logic between sandbox/tools and introduces asymmetry, where the `PosixShellSandbox` implements `request` while `NotASandboxLocalEnvironment` does not. Future network-based tools will also need to implement their own host-side HTTP requests.
 
