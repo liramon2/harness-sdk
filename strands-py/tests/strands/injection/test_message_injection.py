@@ -63,7 +63,7 @@ class TestFoldIntoLastUserMessage:
         assert result == [
             {"role": "user", "content": [{"text": "original task"}]},
             {"role": "assistant", "content": [{"text": "prior step"}]},
-            {"role": "user", "content": [{"text": "next ask"}, {"text": "\n\nINJECTED"}]},
+            {"role": "user", "content": [{"text": "next ask"}, {"text": "INJECTED"}]},
         ]
 
     def test_returns_new_list_and_does_not_mutate_input(self):
@@ -85,7 +85,7 @@ class TestFoldIntoLastUserMessage:
         assert result == [
             {"role": "user", "content": [{"text": "task"}]},
             {"role": "assistant", "content": [{"text": "thinking"}]},
-            {"role": "user", "content": [tr["content"][0], {"text": "\n\nINJECTED"}]},
+            {"role": "user", "content": [tr["content"][0], {"text": "INJECTED"}]},
         ]
 
     def test_targets_most_recent_user_message(self):
@@ -95,7 +95,7 @@ class TestFoldIntoLastUserMessage:
         assert result == [
             {"role": "user", "content": [{"text": "first"}]},
             {"role": "assistant", "content": [{"text": "a"}]},
-            {"role": "user", "content": [{"text": "second"}, {"text": "\n\nINJECTED"}]},
+            {"role": "user", "content": [{"text": "second"}, {"text": "INJECTED"}]},
         ]
 
     def test_preserves_message_metadata(self):
@@ -161,7 +161,7 @@ class TestCreateInjectionMiddleware:
 
         assert result.messages == [
             {"role": "assistant", "content": [{"text": "prior"}]},
-            {"role": "user", "content": [{"text": "ask"}, {"text": "\n\nINJECTED"}]},
+            {"role": "user", "content": [{"text": "ask"}, {"text": "INJECTED"}]},
         ]
 
     async def test_passes_conversation_to_render_content(self):
@@ -197,7 +197,7 @@ class TestCreateInjectionMiddleware:
         handler = _create_injection_middleware(render)
         result = await handler(invoke_ctx([user("ask")]))
 
-        assert result.messages == [{"role": "user", "content": [{"text": "ask"}, {"text": "\n\nINJECTED"}]}]
+        assert result.messages == [{"role": "user", "content": [{"text": "ask"}, {"text": "INJECTED"}]}]
 
     async def test_returns_context_unchanged_when_trigger_does_not_fire(self):
         render = MagicMock(return_value="x")
@@ -216,7 +216,7 @@ class TestCreateInjectionMiddleware:
         assert result.messages == [
             {"role": "user", "content": [{"text": "task"}]},
             {"role": "assistant", "content": [{"text": "a"}]},
-            {"role": "user", "content": [tr["content"][0], {"text": "\n\nINJECTED"}]},
+            {"role": "user", "content": [tr["content"][0], {"text": "INJECTED"}]},
         ]
 
     async def test_returns_context_unchanged_when_render_yields_empty(self):
@@ -283,8 +283,8 @@ class TestPerCallTrailingBlocksReporting:
 
         assert not any("cachePoint" in block for message in result.messages for block in message["content"])
 
-    async def test_separates_injected_text_from_the_user_ask(self):
+    async def test_injects_text_as_distinct_block_from_the_user_ask(self):
         handler = _create_injection_middleware(lambda context: "INJECTED")
         result = await handler(invoke_ctx([user("ask")]))
 
-        assert result.messages[0]["content"][-1] == {"text": "\n\nINJECTED"}
+        assert result.messages[0]["content"][-1] == {"text": "INJECTED"}

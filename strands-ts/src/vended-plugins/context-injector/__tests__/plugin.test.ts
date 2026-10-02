@@ -57,7 +57,7 @@ describe('ContextInjector', () => {
         { role: 'assistant', content: [{ text: 'prior' }], trackingId: anyTrackingId },
         {
           role: 'user',
-          content: [{ text: 'ask' }, { text: '\n\nINJECTED' }],
+          content: [{ text: 'ask' }, { text: 'INJECTED' }],
           trackingId: anyTrackingId,
         },
       ])
@@ -80,7 +80,7 @@ describe('ContextInjector', () => {
       expect(result.messages.map((m) => m.toJSON())).toStrictEqual([
         {
           role: 'user',
-          content: [{ text: 'ask' }, { text: '\n\nINJECTED' }],
+          content: [{ text: 'ask' }, { text: 'INJECTED' }],
           trackingId: anyTrackingId,
         },
         { role: 'assistant', content: [{ text: 'reply' }], trackingId: anyTrackingId },

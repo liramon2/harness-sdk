@@ -29,7 +29,7 @@ describe('foldIntoLastUserMessage', () => {
       { role: 'assistant', content: [{ text: 'prior step' }], trackingId: anyTrackingId },
       {
         role: 'user',
-        content: [{ text: 'next ask' }, { text: '\n\nINJECTED' }],
+        content: [{ text: 'next ask' }, { text: 'INJECTED' }],
         trackingId: anyTrackingId,
       },
     ])
@@ -65,7 +65,7 @@ describe('foldIntoLastUserMessage', () => {
       { role: 'assistant', content: [{ text: 'thinking' }], trackingId: anyTrackingId },
       {
         role: 'user',
-        content: [tr.toJSON().content[0], { text: '\n\nINJECTED' }],
+        content: [tr.toJSON().content[0], { text: 'INJECTED' }],
         trackingId: anyTrackingId,
       },
     ])
@@ -80,7 +80,7 @@ describe('foldIntoLastUserMessage', () => {
       { role: 'assistant', content: [{ text: 'a' }], trackingId: anyTrackingId },
       {
         role: 'user',
-        content: [{ text: 'second' }, { text: '\n\nINJECTED' }],
+        content: [{ text: 'second' }, { text: 'INJECTED' }],
         trackingId: anyTrackingId,
       },
     ])
@@ -107,7 +107,7 @@ describe('foldIntoLastUserMessage', () => {
     // Counting an earlier message's blocks would make the provider count back through the wrong one.
     const result = foldIntoLastUserMessage([user('ask'), assistant('reply')], 'INJECTED')
 
-    expect(result.messages[0]!.toJSON().content).toStrictEqual([{ text: 'ask' }, { text: '\n\nINJECTED' }])
+    expect(result.messages[0]!.toJSON().content).toStrictEqual([{ text: 'ask' }, { text: 'INJECTED' }])
     expect(result.appended).toBe(0)
   })
 
@@ -185,7 +185,7 @@ describe('createInjectionMiddleware', () => {
       { role: 'assistant', content: [{ text: 'prior' }], trackingId: anyTrackingId },
       {
         role: 'user',
-        content: [{ text: 'ask' }, { text: '\n\nINJECTED' }],
+        content: [{ text: 'ask' }, { text: 'INJECTED' }],
         trackingId: anyTrackingId,
       },
     ])
@@ -242,7 +242,7 @@ describe('createInjectionMiddleware', () => {
       { role: 'assistant', content: [{ text: 'a' }], trackingId: anyTrackingId },
       {
         role: 'user',
-        content: [tr.toJSON().content[0], { text: '\n\nINJECTED' }],
+        content: [tr.toJSON().content[0], { text: 'INJECTED' }],
         trackingId: anyTrackingId,
       },
     ])

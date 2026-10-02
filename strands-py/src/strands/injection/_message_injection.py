@@ -177,9 +177,7 @@ def _fold_into_last_user_message(messages: Messages, text: str) -> tuple[Message
         return messages, 0
 
     target = messages[target_index]
-    # Some providers concatenate adjacent text blocks, which would run this onto the user's own words.
-    separator = "\n\n" if target["content"] and not text.startswith("\n") else ""
-    injected: ContentBlock = {"text": f"{separator}{text}"}
+    injected: ContentBlock = {"text": text}
     content = [*target["content"], injected]
 
     folded: Message = {"role": target["role"], "content": content}
