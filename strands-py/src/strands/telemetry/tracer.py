@@ -122,9 +122,6 @@ class Tracer:
         self.tracer = self.tracer_provider.get_tracer(self.service_name)
         ThreadingInstrumentor().instrument()
 
-        # Baggage entries injected into the OTel context for every span.
-        self._baggage_entries: dict[str, str] = {}
-
         # Read OTEL_SEMCONV_STABILITY_OPT_IN environment variable
         opt_in_values = self._parse_semconv_opt_in()
         ## To-do: should not set below attributes directly, use env var instead
@@ -150,14 +147,6 @@ class Tracer:
         """
         opt_in_env = os.getenv("OTEL_SEMCONV_STABILITY_OPT_IN", "")
         return {value.strip() for value in opt_in_env.split(",")}
-
-    def update_baggage_entries(self, entries: dict[str, str]) -> None:
-        """Merge baggage entries injected into every span's parent context.
-
-        Args:
-            entries: Key-value pairs to set as W3C baggage entries.
-        """
-        self._baggage_entries.update(entries)
 
     @staticmethod
     def _compile_unredacted_patterns(value: str) -> tuple[frozenset[str], tuple[str, ...]]:
@@ -246,6 +235,11 @@ class Tracer:
         if force_root:
             # An empty context detaches the span from any (possibly ended) current span.
             context = context_api.Context()
+
+            # Preserve baggage so that invocation-scoped entries propagate to root spans.
+            current = context_api.get_current()
+            for key, value in baggage_api.get_all(context=current).items():
+                context = baggage_api.set_baggage(key, value, context=context)
         else:
             if not parent_span:
                 parent_span = trace_api.get_current_span()
@@ -253,12 +247,6 @@ class Tracer:
             context = None
             if parent_span and parent_span.is_recording() and parent_span != trace_api.INVALID_SPAN:
                 context = trace_api.set_span_in_context(parent_span)
-
-        # Inject baggage entries into the span context.
-        if self._baggage_entries:
-            context = context or context_api.get_current()
-            for key, value in self._baggage_entries.items():
-                context = baggage_api.set_baggage(key, value, context=context)
 
         span = self.tracer.start_span(name=span_name, context=context, kind=span_kind, links=links)
 

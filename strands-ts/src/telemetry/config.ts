@@ -56,7 +56,13 @@ if (typeof globalThis.process?.getBuiltinModule === 'function') {
       DefaultPropagator = new CompositePropagator({
         propagators: [new W3CTraceContextPropagator(), new W3CBaggagePropagator()],
       })
-      DefaultBaggageSpanProcessor = req('@opentelemetry/baggage-span-processor').BaggageSpanProcessor
+      try {
+        DefaultBaggageSpanProcessor = req('@opentelemetry/baggage-span-processor').BaggageSpanProcessor
+      } catch {
+        logger.info(
+          '@opentelemetry/baggage-span-processor not installed | baggage entries will not be stamped as span attributes'
+        )
+      }
     }
   } catch {
     logger.info('sdk-trace-node not available | using BasicTracerProvider without async context propagation')
@@ -181,7 +187,7 @@ export function setupTracer(config: TracerConfig = {}): TracerProvider {
   }
 
   const spanProcessors: SpanProcessor[] = []
-  if (DefaultBaggageSpanProcessor) spanProcessors.push(new DefaultBaggageSpanProcessor(() => true))
+  if (DefaultBaggageSpanProcessor) spanProcessors.push(new DefaultBaggageSpanProcessor((key) => key === 'session.id'))
   if (config.exporters?.otlp) spanProcessors.push(new BatchSpanProcessor(new OTLPTraceExporter()))
   if (config.exporters?.console) spanProcessors.push(new SimpleSpanProcessor(new ConsoleSpanExporter()))
   _provider = new DefaultTracerProvider({ resource: getOtelResource(), spanProcessors })

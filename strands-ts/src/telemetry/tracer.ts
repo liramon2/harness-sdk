@@ -1013,12 +1013,24 @@ export class Tracer {
         ? trace.setSpan(context.active(), options.parentSpan)
         : context.active()
 
-    // Inject baggage entries into the span context.
+    if (options.forceRoot) {
+      // Preserve baggage so invocation-scoped entries propagate to root spans.
+      try {
+        const bag = propagation.getBaggage(context.active())
+        if (bag) ctx = propagation.setBaggage(ctx, bag)
+      } catch {
+        // getBaggage can fail in mocked/no-op environments — fall through to ROOT_CONTEXT.
+      }
+    }
+
+    // Inject baggage entries into the span context, skipping keys that already exist in the context.
     if (Object.keys(this._baggageEntries).length > 0) {
       try {
         let bag = propagation.getBaggage(ctx) ?? propagation.createBaggage()
         for (const [key, value] of Object.entries(this._baggageEntries)) {
-          bag = bag.setEntry(key, { value })
+          if (!bag.getEntry(key)) {
+            bag = bag.setEntry(key, { value })
+          }
         }
         ctx = propagation.setBaggage(ctx, bag)
       } catch (err) {
