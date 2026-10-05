@@ -770,7 +770,7 @@ subagent = make_subagent(
         Option("deep", "us.anthropic.claude-opus-4-20250514-v1:0", "hard problems"),
     ]),
     context=Choice(["none", "all", "no_tools"]),
-    inherited_tools=["read", "shell", "write"],
+    tools=Choice(["read", "shell", "write"], multiple=True),
     max_depth=3,
 )
 agent = Agent(tools=[subagent])

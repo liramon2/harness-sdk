@@ -279,18 +279,25 @@ def _default_builder(parent: Agent) -> AgentBuilder:
                 parent_tools[tool.tool_name] = tool
 
         # tools=None means inherit all; a list means only those.
-        child_tools: list[Any] = (
-            list(parent_tools.values())
-            if spec.tools is None
-            else [parent_tools[tool_name] for tool_name in spec.tools if tool_name in parent_tools]
-        )
+        child_tools: list[Any] = list(parent_tools.values()) if spec.tools is None else []
+        if spec.tools is not None:
+            for tool_name in spec.tools:
+                if tool_name in parent_tools:
+                    child_tools.append(parent_tools[tool_name])
+                else:
+                    logger.warning("subagent requested tool %r but parent does not own it; skipping", tool_name)
 
         # MCP servers: spec.mcp_servers=None means inherit all, a list means only those.
-        selected = (
-            mcp_clients
-            if spec.mcp_servers is None
-            else {name: mcp_clients[name] for name in spec.mcp_servers if name in mcp_clients}
-        )
+        selected: Mapping[str, MCPClient]
+        if spec.mcp_servers is None:
+            selected = mcp_clients
+        else:
+            selected = {}
+            for name in spec.mcp_servers:
+                if name in mcp_clients:
+                    selected[name] = mcp_clients[name]
+                else:
+                    logger.warning("subagent requested MCP server %r but parent does not own it; skipping", name)
         child_tools.extend(selected.values())
 
         return Agent(

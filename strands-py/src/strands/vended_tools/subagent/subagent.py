@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ...multiagent.spec import (
@@ -380,8 +380,6 @@ def make_subagent(
     mcp_servers: Choice | Fixed | Inherit | None = None,
     model: Inherit | Choice | Fixed | None = None,
     context: Fixed | Choice | None = None,
-    inherited_tools: Sequence[str] = (),
-    inherited_mcp_servers: Sequence[str] = (),
     max_depth: int = DEFAULT_SUBAGENT_MAX_DEPTH,
     name: str = "subagent",
 ) -> AgentTool:
@@ -389,10 +387,6 @@ def make_subagent(
 
     Each axis accepts a policy from :mod:`~strands.multiagent.spec` that controls what
     the model sees and can supply. Omitted axes use sensible defaults.
-
-    ``inherited_tools`` and ``inherited_mcp_servers`` are only used to build the default
-    ``Choice`` when the corresponding axis is omitted; they are ignored when ``tools`` or
-    ``mcp_servers`` is passed explicitly.
 
     Raises:
         ValueError: If *max_depth* < 1, *name* is empty, or a ``Choice`` axis violates
@@ -410,19 +404,17 @@ def make_subagent(
     if default_preset is None and presets:
         default_preset = next(iter(presets))
 
-    # Default the tools axis to a multiple Choice over the inherited tools; a tools Choice must be multiple.
+    # A tools Choice must be multiple.
     if tools is None:
-        tools = Choice(list(inherited_tools), multiple=True) if inherited_tools else Inherit()
+        tools = Inherit()
     elif isinstance(tools, Choice):
         if not tools.options:
             raise ValueError("tools=Choice([]) offers no options; use Fixed([]) for a toolless child, or Inherit().")
         if not tools.multiple:
             raise ValueError("tools=Choice(...) must be multiple=True; a subagent selects a subset of tools.")
 
-    # mcp_servers mirrors tools: a multiple Choice over the parent's servers, or no parameter (Inherit)
-    # when the parent has none.
     if mcp_servers is None:
-        mcp_servers = Choice(list(inherited_mcp_servers), multiple=True) if inherited_mcp_servers else Inherit()
+        mcp_servers = Inherit()
     elif isinstance(mcp_servers, Choice):
         if not mcp_servers.options:
             raise ValueError("mcp_servers=Choice([]) offers no options; use Fixed([]) for no servers, or Inherit().")

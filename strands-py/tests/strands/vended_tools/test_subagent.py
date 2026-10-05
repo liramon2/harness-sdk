@@ -57,8 +57,8 @@ def test_axes_derive_expected_parameters():
         instructions=Choice(["concise", "verbose"]),
         model=Choice(["fast", "deep"]),
         context=Choice(["none", "all"]),
-        inherited_tools=["read", "shell"],
-        inherited_mcp_servers=["fs", "api"],
+        tools=Choice(["read", "shell"], multiple=True),
+        mcp_servers=Choice(["fs", "api"], multiple=True),
     )
     props = tool.tool_spec["inputSchema"]["json"]["properties"]
     assert set(props) == {
@@ -85,7 +85,6 @@ def test_fixed_and_inherit_hide_parameters():
         tools=Inherit(),
         model=Inherit(),
         context=Fixed("none"),
-        inherited_tools=["read"],
     )
     assert set(tool.tool_spec["inputSchema"]["json"]["properties"]) == {"task"}
 
@@ -171,7 +170,7 @@ async def test_tools_clamped_and_coerced():
         captured["spec"] = spec
         return _FakeChild(_FakeResult())
 
-    tool = make_subagent(builder=builder, inherited_tools=["read", "shell"])
+    tool = make_subagent(builder=builder, tools=Choice(["read", "shell"], multiple=True))
     await _events(tool, {"task": "x", "tools": ["read", "write"]})
     assert captured["spec"].tools == ["read"]
     await _events(tool, {"task": "x", "tools": "read"})
