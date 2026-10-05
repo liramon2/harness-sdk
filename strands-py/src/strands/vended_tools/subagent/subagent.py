@@ -14,6 +14,7 @@ import re
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from ...agent.conversation_manager.compression.context_compression import find_valid_trim_point
 from ...multiagent.spec import (
     AgentBuilder,
     AgentSpec,
@@ -69,11 +70,11 @@ def _build_schema(
     *,
     presets: Mapping[str, Preset],
     default_preset: str | None,
-    instructions: Any,
-    tools: Any,
-    mcp_servers: Any,
-    model: Any,
-    context: Any,
+    instructions: Open | Choice | Fixed,
+    tools: Choice | Fixed | Inherit,
+    mcp_servers: Choice | Fixed | Inherit,
+    model: Inherit | Choice | Fixed,
+    context: Fixed | Choice,
 ) -> dict[str, Any]:
     """Derive the tool's input schema from the axis modes."""
     props: dict[str, Any] = {
@@ -171,15 +172,6 @@ class _SubagentTool(AgentTool):
     def tool_type(self) -> str:
         return "agent"
 
-    def _is_valid_trim_point(self, messages: list[Message], index: int) -> bool:
-        """Check if ``index`` is a safe point to trim the message history."""
-        message = messages[index]
-        if message["role"] != "user" or any("toolResult" in b for b in message["content"]):
-            return False
-        if any("toolUse" in b for b in message["content"]):
-            return index + 1 < len(messages) and any("toolResult" in b for b in messages[index + 1]["content"])
-        return True
-
     def _fork_messages(self, parent: Agent | None, last_n: int | None) -> list[Message]:
         """Deep-copy the parent's messages, dropping in-flight tool calls and reasoning blocks.
 
@@ -208,8 +200,9 @@ class _SubagentTool(AgentTool):
                 forked.append(msg)
 
         if last_n is not None and last_n > 0:
+            # Search backwards for a valid trim point using a 2-element window.
             start = max(len(forked) - last_n, 0)
-            while start > 0 and not self._is_valid_trim_point(forked, start):
+            while start > 0 and find_valid_trim_point(forked[start : start + 2], 0) != 0:
                 start -= 1
             forked = forked[start:]
         return forked
@@ -448,3 +441,7 @@ def make_subagent(
         )
 
     return _SubagentTool(name, tool_spec, resolve, context, builder, max_depth)
+
+
+subagent = make_subagent()
+"""Pre-built subagent tool with default settings (generalist preset, all axes using defaults)."""

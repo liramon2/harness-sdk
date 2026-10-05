@@ -3,15 +3,15 @@
 Example Usage:
     ```python
     from strands import Agent
-    from strands.vended_tools.subagent import make_subagent
+    from strands.vended_tools.subagent import subagent
 
-    subagent = make_subagent()
     agent = Agent(tools=[subagent])
     ```
 """
 
-from .subagent import make_subagent
+from .subagent import make_subagent, subagent
 
 __all__ = [
     "make_subagent",
+    "subagent",
 ]

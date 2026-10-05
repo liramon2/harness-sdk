@@ -56,6 +56,7 @@ from .mcp_router import make_mcp_router
 from .notebook import make_notebook, notebook
 from .shell import make_shell, shell
 from .sleep import make_sleep, sleep
+from .subagent import make_subagent, subagent
 
 
 def __getattr__(name: str) -> Any:
@@ -84,12 +85,6 @@ def __getattr__(name: str) -> Any:
         from .a2a_client import make_a2a_client
 
         return make_a2a_client
-    # subagent pulls multiagent.spec (model/MCP types), so it is lazy-loaded
-    # to keep the base import free of those dependencies.
-    if name == "make_subagent":
-        from .subagent import make_subagent
-
-        return make_subagent
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -105,7 +100,9 @@ __all__ = [
     "make_mcp_router",
     "make_shell",
     "make_sleep",
+    "make_subagent",
     "notebook",
     "shell",
     "sleep",
+    "subagent",
 ]

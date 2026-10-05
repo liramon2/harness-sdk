@@ -737,9 +737,8 @@ _Supported in: Python._
 
 ```python
 from strands import Agent
-from strands.vended_tools.subagent import make_subagent
+from strands.vended_tools.subagent import subagent
 
-subagent = make_subagent()
 agent = Agent(
     system_prompt="You are a manager.",
     tools=[subagent],
