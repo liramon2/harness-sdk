@@ -204,3 +204,38 @@ def test_default_builder_propagates_trace_attributes():
     parent = Agent(trace_attributes={"team": "infra"})
     child = _default_builder(parent)(AgentSpec())
     assert child.trace_attributes == {"team": "infra"}
+
+
+def test_default_builder_warns_on_unknown_tools(caplog):
+    """Requesting tools or MCP servers the parent doesn't own logs a warning and skips them."""
+    import logging
+
+    @tool
+    def read() -> str:
+        """Read a file."""
+        return ""
+
+    parent = Agent(tools=[read])
+    with caplog.at_level(logging.WARNING, logger="strands.multiagent.spec"):
+        child = _default_builder(parent)(AgentSpec(tools=["read", "missing"], mcp_servers=["missing_server"]))
+
+    assert any("missing" in r.message and "tool" in r.message for r in caplog.records)
+    assert any("missing_server" in r.message and "MCP server" in r.message for r in caplog.records)
+    # "read" was found; "missing" and "missing_server" were skipped
+    child_tool_names = [t.tool_name for t in child.tool_registry.registry.values()]
+    assert "read" in child_tool_names
+    assert "missing" not in child_tool_names
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        pytest.param(None, id="suppressed"),
+        pytest.param(lambda **kw: None, id="custom"),
+    ],
+)
+def test_default_builder_propagates_callback_handler(handler):
+    """callback_handler on the parent flows to the child."""
+    parent = Agent(callback_handler=handler)
+    child = _default_builder(parent)(AgentSpec())
+    assert child.callback_handler is parent.callback_handler
