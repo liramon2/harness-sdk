@@ -199,6 +199,13 @@ def test_default_builder_propagates_sandbox():
     assert child.sandbox is sandbox
 
 
+def test_default_builder_propagates_trace_attributes():
+    """trace_attributes from the parent appear on the child."""
+    parent = Agent(trace_attributes={"team": "infra"})
+    child = _default_builder(parent)(AgentSpec())
+    assert child.trace_attributes == {"team": "infra"}
+
+
 @pytest.mark.parametrize(
     "handler",
     [
@@ -211,10 +218,3 @@ def test_default_builder_propagates_callback_handler(handler):
     parent = Agent(callback_handler=handler)
     child = _default_builder(parent)(AgentSpec())
     assert child.callback_handler is parent.callback_handler
-
-
-def test_default_builder_propagates_trace_attributes():
-    """trace_attributes from the parent appear on the child."""
-    parent = Agent(trace_attributes={"team": "infra"})
-    child = _default_builder(parent)(AgentSpec())
-    assert child.trace_attributes == {"team": "infra"}

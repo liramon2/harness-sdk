@@ -134,7 +134,11 @@ def _build_schema(
 
 
 class _SubagentTool(AgentTool):
-    """Streams a fresh per-call child and propagates its interrupts to the parent for resume."""
+    """Streams a fresh per-call child and propagates its interrupts to the parent for resume.
+
+    If the parent never answers the interrupt, the child ``Agent`` remains referenced here for
+    the lifetime of this tool instance.
+    """
 
     def __init__(
         self,
@@ -214,8 +218,11 @@ class _SubagentTool(AgentTool):
         """Render the parent's text turns as a plain-text block for ``"no_tools"`` context mode."""
         if parent is None:
             return ""
+        messages = parent.messages
+        if last_n is not None and last_n > 0:
+            messages = messages[-last_n:]
         lines = []
-        for message in parent.messages:
+        for message in messages:
             text = " ".join(b["text"] for b in message["content"] if "text" in b).strip()
             if text.startswith("<parent_context>\n"):
                 _, found, stripped = text.partition(_FRAMING_END)
@@ -223,8 +230,6 @@ class _SubagentTool(AgentTool):
                     text = stripped
             if text:
                 lines.append(f"{message['role']}: {text}".replace("\n", "\n  "))
-        if last_n is not None and last_n > 0:
-            lines = lines[-last_n:]
         return _SENTINEL.sub(r"<\\\1parent_context>", "\n".join(lines))
 
     def _resolve_context(self, raw: Mapping[str, Any]) -> tuple[str, int | None]:
@@ -249,84 +254,102 @@ class _SubagentTool(AgentTool):
 
         return ctx_mode, last_n
 
-    def _build_prompt(
-        self, task: str, ctx_mode: str, last_messages: int | None, parent: Agent | None
-    ) -> str | list[Message]:
-        """Build the child's prompt, incorporating parent context based on the context mode."""
-        if ctx_mode == "all":
-            messages = self._fork_messages(parent, last_messages)
-            if not messages:
-                return task
-            framed: ContentBlock = {"text": f"{_FORK_PREAMBLE}\n\n{task}"}
-            if messages[-1]["role"] == "user":
-                return [
-                    *messages[:-1],
-                    {"role": "user", "content": [*messages[-1]["content"], framed]},
-                ]
-            return [*messages, {"role": "user", "content": [framed]}]
-
-        if ctx_mode == "no_tools":
-            block = self._render_context(parent, last_messages)
-            if block:
-                return f"<parent_context>\n{block}\n</parent_context>\n\n{_CONTEXT_PREAMBLE}\n\n{task}"
-
-        return task
-
     def _error_result(self, tool_use_id: str, text: str) -> ToolResultEvent:
         return ToolResultEvent({"toolUseId": tool_use_id, "status": "error", "content": [{"text": text}]})
+
+    def _prepare_child(self, tool_use_id: str, raw: Mapping[str, Any], parent: Agent | None) -> tuple[Agent, Any] | str:
+        """Resolve or resume the child agent and its prompt.
+
+        Returns ``(child, prompt)`` on success, or a ``str`` error message on validation failure.
+        """
+        child = self._pending.get(tool_use_id)
+        if child is not None and child._interrupt_state.activated:
+            prompt: Any = [
+                {
+                    "interruptResponse": {
+                        "interruptId": interrupt.id,
+                        "response": interrupt.response,
+                    }
+                }
+                for interrupt in child._interrupt_state.interrupts.values()
+                if interrupt.response is not None
+            ]
+            return child, prompt
+
+        stored_depth = None if parent is None else parent.state.get(_DEPTH_STATE_KEY)
+        depth = self._max_depth if stored_depth is None else stored_depth
+        if depth <= 0:
+            return (
+                f"Delegation depth limit reached ({self._max_depth} levels); you cannot delegate "
+                "further. Complete this task yourself instead of calling subagent again."
+            )
+        task = raw.get("task")
+        if not isinstance(task, str) or not task.strip():
+            return "Missing required parameter 'task': describe the task to delegate."
+
+        spec = self._resolve(raw)
+        build = self._builder or _default_builder(parent)  # type: ignore[arg-type]
+        child = build(spec)
+        child.state.set(_DEPTH_STATE_KEY, depth - 1)
+        ctx_mode, last_messages = self._resolve_context(raw)
+
+        prompt = task
+        if ctx_mode == "all":
+            messages = self._fork_messages(parent, last_messages)
+            if messages:
+                framed: ContentBlock = {"text": f"{_FORK_PREAMBLE}\n\n{task}"}
+                if messages[-1]["role"] == "user":
+                    prompt = [
+                        *messages[:-1],
+                        {"role": "user", "content": [*messages[-1]["content"], framed]},
+                    ]
+                else:
+                    prompt = [*messages, {"role": "user", "content": [framed]}]
+        elif ctx_mode == "no_tools":
+            block = self._render_context(parent, last_messages)
+            if block:
+                prompt = f"<parent_context>\n{block}\n</parent_context>\n\n{_CONTEXT_PREAMBLE}\n\n{task}"
+
+        return child, prompt
+
+    def _finalize_result(
+        self, tool_use_id: str, tool_use: ToolUse, child: Agent, result: Any
+    ) -> ToolResultEvent | ToolInterruptEvent:
+        """Map the child's result to the terminal event for the parent."""
+        if result is None:
+            self._pending.pop(tool_use_id, None)
+            return self._error_result(tool_use_id, "Subagent produced no result.")
+        if result.stop_reason == "interrupt" and result.interrupts:
+            self._pending[tool_use_id] = child
+            return ToolInterruptEvent(tool_use, list(result.interrupts))
+        if result.stop_reason == "cancelled":
+            self._pending.pop(tool_use_id, None)
+            return self._error_result(tool_use_id, "Subagent was cancelled.")
+        self._pending.pop(tool_use_id, None)
+        return ToolResultEvent(
+            {
+                "toolUseId": tool_use_id,
+                "status": "success",
+                "content": [{"text": str(result)}],
+            }
+        )
 
     async def stream(self, tool_use: ToolUse, invocation_state: dict[str, Any], **kwargs: Any) -> ToolGenerator:
         tool_use_id = tool_use["toolUseId"]
         raw = tool_use.get("input", {}) or {}
         parent = invocation_state.get("agent")
 
-        # resolve/build/render can raise; surface it as an error tool result, not an uncaught
-        # exception.
         try:
-            child = self._pending.get(tool_use_id)
-            if child is not None and child._interrupt_state.activated:
-                # Resume: the parent set responses on the shared interrupt objects the child
-                # still holds.
-                prompt: Any = [
-                    {
-                        "interruptResponse": {
-                            "interruptId": interrupt.id,
-                            "response": interrupt.response,
-                        }
-                    }
-                    for interrupt in child._interrupt_state.interrupts.values()
-                    if interrupt.response is not None
-                ]
-            else:
-                stored_depth = None if parent is None else parent.state.get(_DEPTH_STATE_KEY)
-                depth = self._max_depth if stored_depth is None else stored_depth
-                if depth <= 0:
-                    yield self._error_result(
-                        tool_use_id,
-                        f"Delegation depth limit reached ({self._max_depth} levels); you cannot delegate "
-                        "further. Complete this task yourself instead of calling subagent again.",
-                    )
-                    return
-                task = raw.get("task")
-                if not isinstance(task, str) or not task.strip():
-                    yield self._error_result(
-                        tool_use_id, "Missing required parameter 'task': describe the task to delegate."
-                    )
-                    return
-                spec = self._resolve(raw)
-                build = self._builder or _default_builder(parent)  # type: ignore[arg-type]
-                child = build(spec)
-                child.state.set(_DEPTH_STATE_KEY, depth - 1)
-                ctx_mode, last_messages = self._resolve_context(raw)
-                prompt = self._build_prompt(task, ctx_mode, last_messages, parent)
+            prepared = self._prepare_child(tool_use_id, raw, parent)
+            if isinstance(prepared, str):
+                yield self._error_result(tool_use_id, prepared)
+                return
+            child, prompt = prepared
 
-            # Cancelling the parent's tool call cancels the delegation too (mirrors _AgentAsTool).
-            # A framework-supplied _tool_context (background execution) carries a per-call signal.
             tool_context = kwargs.get("_tool_context")
             cancel_signal = (
                 tool_context.cancel_signal if tool_context is not None else getattr(parent, "cancel_signal", None)
             )
-            # Shallow copy: the SDK rewrites invocation_state["agent"] per cycle; a shared dict would bleed agent=child.
             child_state = {**invocation_state} if isinstance(invocation_state, dict) else invocation_state
             result = None
             async for event in child.stream_async(prompt, invocation_state=child_state, cancel_signal=cancel_signal):
@@ -334,26 +357,8 @@ class _SubagentTool(AgentTool):
                     result = event["result"]
                 else:
                     yield ToolStreamEvent(tool_use, event)
-            if result is None:
-                self._pending.pop(tool_use_id, None)
-                yield self._error_result(tool_use_id, "Subagent produced no result.")
-                return
-            if result.stop_reason == "interrupt" and result.interrupts:
-                self._pending[tool_use_id] = child
-                yield ToolInterruptEvent(tool_use, list(result.interrupts))
-                return
-            if result.stop_reason == "cancelled":
-                self._pending.pop(tool_use_id, None)
-                yield self._error_result(tool_use_id, "Subagent was cancelled.")
-                return
-            self._pending.pop(tool_use_id, None)
-            yield ToolResultEvent(
-                {
-                    "toolUseId": tool_use_id,
-                    "status": "success",
-                    "content": [{"text": str(result)}],
-                }
-            )
+
+            yield self._finalize_result(tool_use_id, tool_use, child, result)
         except Exception as exc:
             self._pending.pop(tool_use_id, None)
             logger.warning(
@@ -384,6 +389,10 @@ def make_subagent(
 
     Each axis accepts a policy from :mod:`~strands.multiagent.spec` that controls what
     the model sees and can supply. Omitted axes use sensible defaults.
+
+    ``inherited_tools`` and ``inherited_mcp_servers`` are only used to build the default
+    ``Choice`` when the corresponding axis is omitted; they are ignored when ``tools`` or
+    ``mcp_servers`` is passed explicitly.
 
     Raises:
         ValueError: If *max_depth* < 1, *name* is empty, or a ``Choice`` axis violates

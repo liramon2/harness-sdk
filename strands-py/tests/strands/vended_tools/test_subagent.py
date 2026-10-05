@@ -464,3 +464,59 @@ async def test_no_result_from_child_yields_error():
     tool = make_subagent(builder=lambda spec: _EmptyChild(), presets={"generalist": GENERALIST})
     result = _result(await _events(tool, {"task": "x"}))
     assert result["status"] == "error" and "no result" in result["content"][0]["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_missing_task_returns_error():
+    """Empty or missing task should produce an error result."""
+    tool = make_subagent(builder=lambda spec: _FakeChild(_FakeResult()), presets={"generalist": GENERALIST})
+    result = _result(await _events(tool, {}))
+    assert result["status"] == "error"
+    assert "task" in result["content"][0]["text"].lower()
+    result2 = _result(await _events(tool, {"task": "   "}))
+    assert result2["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_no_parent_falls_back_to_plain_task():
+    """Both context='all' and 'no_tools' with no parent should return just the task string."""
+    for ctx in ("all", "no_tools"):
+        child = _FakeChild(_FakeResult())
+        tool = make_subagent(builder=lambda spec, c=child: c, presets={}, context=Fixed(ctx))
+        await _events(tool, {"task": "do X"}, parent=None)
+        assert child.prompts[0] == "do X", f"context={ctx!r} with no parent should yield plain task"
+
+
+@pytest.mark.asyncio
+async def test_context_all_last_message_is_assistant():
+    """context='all' where last surviving message is assistant should append a new user turn."""
+    child = _FakeChild(_FakeResult())
+    messages = [
+        {"role": "user", "content": [{"text": "hello"}]},
+        {"role": "assistant", "content": [{"text": "hi back"}]},
+    ]
+    parent = SimpleNamespace(state=AgentState(), messages=messages)
+    tool = make_subagent(builder=lambda spec: child, presets={}, context=Fixed("all"))
+    await _events(tool, {"task": "do X"}, parent=parent)
+    prompt = child.prompts[0]
+    assert prompt[-1]["role"] == "user"
+    assert prompt[-1]["content"] == [_framed("do X")]
+    assert len(prompt) == 3
+
+
+@pytest.mark.asyncio
+async def test_render_context_last_n():
+    """_render_context should respect last_n to trim to the last N text turns."""
+    child = _FakeChild(_FakeResult())
+    messages = [
+        {"role": "user", "content": [{"text": "first"}]},
+        {"role": "assistant", "content": [{"text": "second"}]},
+        {"role": "user", "content": [{"text": "third"}]},
+    ]
+    parent = SimpleNamespace(state=AgentState(), messages=messages)
+    tool = make_subagent(builder=lambda spec: child, presets={}, context=Choice(["none", "no_tools"]))
+    await _events(tool, {"task": "do X", "context": "no_tools", "last_messages": 1}, parent=parent)
+    prompt = child.prompts[0]
+    assert "first" not in prompt
+    assert "second" not in prompt
+    assert "third" in prompt

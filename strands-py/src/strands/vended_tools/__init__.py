@@ -84,6 +84,12 @@ def __getattr__(name: str) -> Any:
         from .a2a_client import make_a2a_client
 
         return make_a2a_client
+    # subagent pulls multiagent.spec (model/MCP types), so it is lazy-loaded
+    # to keep the base import free of those dependencies.
+    if name == "make_subagent":
+        from .subagent import make_subagent
+
+        return make_subagent
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
