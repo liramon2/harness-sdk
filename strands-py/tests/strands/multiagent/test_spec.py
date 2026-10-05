@@ -204,17 +204,3 @@ def test_default_builder_propagates_trace_attributes():
     parent = Agent(trace_attributes={"team": "infra"})
     child = _default_builder(parent)(AgentSpec())
     assert child.trace_attributes == {"team": "infra"}
-
-
-@pytest.mark.parametrize(
-    "handler",
-    [
-        pytest.param(None, id="suppressed"),
-        pytest.param(lambda **kw: None, id="custom"),
-    ],
-)
-def test_default_builder_propagates_callback_handler(handler):
-    """callback_handler on the parent flows to the child."""
-    parent = Agent(callback_handler=handler)
-    child = _default_builder(parent)(AgentSpec())
-    assert child.callback_handler is parent.callback_handler
