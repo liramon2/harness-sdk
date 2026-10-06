@@ -1,7 +1,5 @@
 """Python REPL tool: run Python in a Monty sandbox.
 
-This tool is experimental and subject to change in future revisions without notice.
-
 Provides :func:`make_python_repl` and the default :data:`python_repl` instance.
 Session state (variables, imports, and definitions) persists across calls via
 :attr:`~strands.Agent.state`. Pass ``reset_state=True`` to start fresh.
@@ -19,8 +17,6 @@ import logging
 import weakref
 from typing import TYPE_CHECKING
 
-from ....tools.decorator import tool
-from ....types.tools import ToolContext
 from ..._monty import (
     CollectStreams,
     MontyError,
@@ -28,10 +24,12 @@ from ..._monty import (
     build_error_message,
     run_session,
 )
+from ...tools.decorator import tool
+from ...types.tools import ToolContext
 
 if TYPE_CHECKING:
-    from ....agent.agent import Agent
-    from ....tools.decorator import DecoratedFunctionTool
+    from ...agent.agent import Agent
+    from ...tools.decorator import DecoratedFunctionTool
 
 logger = logging.getLogger(__name__)
 

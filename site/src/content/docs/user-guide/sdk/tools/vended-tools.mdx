@@ -23,7 +23,7 @@ sourceLinks:
   - path: strands-py/src/strands/vended_tools/web_fetch/web_fetch.py
   - path: strands-py/src/strands/vended_tools/a2a_client/a2a_client.py
   - path: strands-py/src/strands/experimental/tools/stop/stop.py
-  - path: strands-py/src/strands/experimental/tools/_python_repl/_python_repl.py
+  - path: strands-py/src/strands/vended_tools/_python_repl/_python_repl.py
 ---
 
 Vended tools are pre-built tools included directly in the Strands Harness SDK for common agent tasks like file operations, shell commands, HTTP requests, and persistent notes.
@@ -54,7 +54,7 @@ Each tool is imported from its own subpath under `@strands-agents/sdk/vended-too
 | [Stop](#stop-experimental) | Gracefully end the agent loop when the task is complete | Python, TypeScript (Node.js, browsers) |
 | [Web Fetch](#web-fetch) | Fetch a URL and return cleaned markdown for a model to read | Python, TypeScript (Node.js) |
 | [A2A Client](#a2a-client) | Discover and send messages to remote A2A-protocol agents | Python, TypeScript (Node.js, browsers) |
-| [Python REPL](#python-repl-experimental) | Execute Python code in a sandboxed interpreter with persistent session state | Python |
+| [Python REPL](#python-repl) | Execute Python code in a sandboxed interpreter with persistent session state | Python |
 
 ### File editor
 
@@ -713,10 +713,7 @@ a2a_client = make_a2a_client(
 agent = Agent(tools=[a2a_client])
 agent("What has the research agent found recently?")
 
-### Python REPL (Experimental)
-
-> This tool is experimental and subject to change in future
-> revisions without notice.
+### Python REPL
 
 Runs model-generated Python code in a [Monty](https://github.com/pydantic/monty) sandbox. Session state (variables, imports, and definitions) persists across calls via agent state, so the model can build on earlier results without redefining everything each turn. Pass `reset_state=True` to start from a clean namespace.
 
@@ -739,7 +736,7 @@ in a [sandboxed environment](../sandbox/index.mdx).
 
 ```python
 from strands import Agent
-from strands.experimental.tools import python_repl
+from strands.vended_tools import python_repl
 
 agent = Agent(tools=[python_repl])
 agent("Use python_repl to compute the first 10 Fibonacci numbers and print them.")
@@ -749,7 +746,7 @@ agent("Use python_repl to compute the first 10 Fibonacci numbers and print them.
 
 ```python
 from strands import Agent
-from strands.experimental.tools import make_python_repl
+from strands.vended_tools import make_python_repl
 
 python_repl = make_python_repl(
     max_duration_secs=10.0,

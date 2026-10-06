@@ -12,15 +12,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from strands._monty import _monty as _monty_module
 from strands.agent.state import AgentState
-from strands.experimental._monty import _monty as _monty_module
-from strands.experimental.tools._python_repl import _python_repl as _python_repl_module
-from strands.experimental.tools._python_repl._python_repl import (
+from strands.types.tools import ToolContext
+from strands.vended_tools._python_repl import _python_repl as _python_repl_module
+from strands.vended_tools._python_repl._python_repl import (
     PythonReplError,
     make_python_repl,
 )
-from strands.types.tools import ToolContext
-from tests.strands.experimental._monty.conftest import FakeMontyError, make_monty_patch, mock_session
+from tests.strands._monty.conftest import FakeMontyError, make_monty_patch, mock_session
 
 
 def _fresh_context(initial_state: dict | None = None) -> tuple[AgentState, ToolContext]:
@@ -303,10 +303,10 @@ class TestPublicImport:
         import sys
         import types
 
-        key = "strands.experimental.tools"
+        key = "strands.vended_tools"
         saved = sys.modules.pop(key, None)
         try:
-            from strands.experimental.tools import python_repl as pr
+            from strands.vended_tools import python_repl as pr
 
             assert not isinstance(pr, types.ModuleType), (
                 f"python_repl resolved to module {pr!r}; expected DecoratedFunctionTool"
@@ -320,10 +320,10 @@ class TestPublicImport:
         import sys
         import types
 
-        key = "strands.experimental.tools"
+        key = "strands.vended_tools"
         saved = sys.modules.pop(key, None)
         try:
-            from strands.experimental.tools import make_python_repl as mpr
+            from strands.vended_tools import make_python_repl as mpr
 
             assert not isinstance(mpr, types.ModuleType)
             assert callable(mpr)

@@ -1,4 +1,4 @@
-"""Shared Monty (https://pydantic.dev/docs/monty/) sandbox primitives for experimental tools.
+"""Shared Monty (https://pydantic.dev/docs/monty/) sandbox primitives.
 
 Each call runs code inside a Monty worker subprocess with no filesystem,
 network, or environment access.

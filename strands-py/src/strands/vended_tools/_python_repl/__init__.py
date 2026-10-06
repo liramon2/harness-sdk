@@ -1,7 +1,5 @@
 """Python REPL tool for running Python in a Monty sandbox.
 
-This tool is experimental and subject to change in future revisions without notice.
-
 Runs model-generated Python inside an isolated Monty sandbox worker.
 Session state persists across calls via :attr:`~strands.Agent.state`,
 so later code can build on earlier calls; pass ``reset_state=True`` to start
@@ -13,7 +11,7 @@ Requires the optional ``python-repl`` extra
 Example Usage:
     ```python
     from strands import Agent
-    from strands.experimental.tools import python_repl
+    from strands.vended_tools import python_repl
 
     agent = Agent(tools=[python_repl])
     ```
