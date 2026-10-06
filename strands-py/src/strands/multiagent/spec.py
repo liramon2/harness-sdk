@@ -263,7 +263,8 @@ def _default_builder(parent: Agent) -> AgentBuilder:
 
     Used by the vended multi-agent tools when no custom builder is supplied.
     Resolves ``spec.tools`` against the parent's tool registry and ``spec.mcp_servers``
-    against the parent's MCP clients (by ``client_name``).
+    against the parent's MCP clients (by ``client_name``). Memory tools are also
+    inherited through the tools axis.
     """
 
     def build(spec: AgentSpec) -> Agent:
@@ -305,6 +306,7 @@ def _default_builder(parent: Agent) -> AgentBuilder:
             tools=child_tools,
             model=spec.model or (parent.model if parent else None),
             name=spec.name,
+            context_manager="auto",
             sandbox=parent.sandbox if parent else None,
             callback_handler=parent.callback_handler if parent else None,
             trace_attributes=parent.trace_attributes if parent else None,

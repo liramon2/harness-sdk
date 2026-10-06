@@ -206,6 +206,13 @@ def test_default_builder_propagates_trace_attributes():
     assert child.trace_attributes == {"team": "infra"}
 
 
+def test_default_builder_uses_auto_context_manager():
+    """Child must get context_manager='auto' so it has proactive truncation and summarization."""
+    parent = Agent()
+    child = _default_builder(parent)(AgentSpec())
+    assert child.context_manager is not None
+
+
 def test_default_builder_warns_on_unknown_tools(caplog):
     """Requesting tools or MCP servers the parent doesn't own logs a warning and skips them."""
     import logging
