@@ -19,12 +19,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..agent import Agent
 from ..models import Model, ModelRouter
 from ..tools.mcp import MCPClient
 from ..tools.mcp.mcp_agent_tool import MCPAgentTool
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -301,12 +304,13 @@ def _default_builder(parent: Agent) -> AgentBuilder:
                     logger.warning("subagent requested MCP server %r but parent does not own it; skipping", name)
         child_tools.extend(selected.values())
 
+        child_model = spec.model or (parent.model if parent else None)
         return Agent(
             system_prompt=spec.instructions or "",
             tools=child_tools,
-            model=spec.model or (parent.model if parent else None),
+            model=child_model,
             name=spec.name,
-            context_manager="auto",
+            context_manager=None if getattr(child_model, "stateful", False) else "auto",
             sandbox=parent.sandbox if parent else None,
             callback_handler=parent.callback_handler if parent else None,
             trace_attributes=parent.trace_attributes if parent else None,

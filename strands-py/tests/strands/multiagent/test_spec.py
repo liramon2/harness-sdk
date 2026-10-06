@@ -213,6 +213,17 @@ def test_default_builder_uses_auto_context_manager():
     assert child.context_manager is not None
 
 
+def test_default_builder_skips_context_manager_for_stateful_model():
+    """Stateful models manage context server-side; context_manager must be None to avoid ValueError."""
+    from unittest.mock import MagicMock
+
+    stateful_model = MagicMock()
+    stateful_model.stateful = True
+    parent = Agent()
+    child = _default_builder(parent)(AgentSpec(model=stateful_model))
+    assert child.context_manager is None
+
+
 def test_default_builder_warns_on_unknown_tools(caplog):
     """Requesting tools or MCP servers the parent doesn't own logs a warning and skips them."""
     import logging
