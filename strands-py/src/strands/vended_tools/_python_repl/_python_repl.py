@@ -161,7 +161,13 @@ def make_python_repl(
             except MontyError as error:
                 raise PythonReplError(build_error_message(error, collector.output, max_output_chars)) from error
             except asyncio.TimeoutError:
-                raise PythonReplError(f"Execution timed out after {timeout_secs}s") from None
+                raise PythonReplError(
+                    build_error_message(
+                        TimeoutError(f"Execution timed out after {timeout_secs}s"),
+                        collector.output,
+                        max_output_chars,
+                    )
+                ) from None
 
             # Get the interpreter output, truncated to the configured limit.
             raw_output = "".join(text for _, text in collector.output)
