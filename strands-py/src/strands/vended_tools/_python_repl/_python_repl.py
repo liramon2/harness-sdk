@@ -34,11 +34,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PYTHON_REPL_DESCRIPTION = (
-    "Executes Python code in a secure Monty sandbox and returns its output. "
+    "Executes Python code in a Monty sandbox and returns its output. "
+    "This is a Python subset, not full CPython. "
+    "Available stdlib modules: json, re, math, datetime, collections, dataclasses, functools, typing, base64. "
+    "There is no filesystem, network, or environment access. "
     "Session state (variables, imports, and function and class definitions) persists across calls, so code "
     "can build on earlier calls; pass reset_state=True to discard it and start from an empty namespace. "
-    "The sandbox has no filesystem, network, or environment access, and execution is bounded by memory and "
-    "time limits, so long-running or resource-heavy code is terminated. Use print() to surface values."
+    "Execution is bounded by memory and time limits, so long-running or resource-heavy code is terminated. "
+    "Use print() to surface values."
 )
 
 _STATE_KEY = "python_repl_session"
@@ -150,6 +153,7 @@ def make_python_repl(
                     code,
                     state=old_state_bytes,
                     cancel_signal=tool_context.cancel_signal,
+                    timeout=timeout_secs,
                     monty_kwargs={"request_timeout": timeout_secs},
                     checkout_kwargs={"limits": limits},
                     feed_kwargs={"print_callback": collector},
