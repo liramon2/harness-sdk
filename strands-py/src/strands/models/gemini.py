@@ -476,6 +476,8 @@ class GeminiModel(Model):
                         return {"messageStop": {"stopReason": "max_tokens"}}
                     case "SAFETY":
                         return {"messageStop": {"stopReason": "guardrail_intervened"}}
+                    case "RECITATION":
+                        return {"messageStop": {"stopReason": "content_filtered"}}
                     case _:
                         return {"messageStop": {"stopReason": "end_turn"}}
 
@@ -677,7 +679,7 @@ class GeminiModel(Model):
                     "data": "TOOL_USE" if tool_used else (candidate.finish_reason if candidate else "STOP"),
                 }
             )
-            if event:
+            if event and event.usage_metadata is not None:
                 yield self._format_chunk({"chunk_type": "metadata", "data": event.usage_metadata})
 
         except genai.errors.ClientError as error:
