@@ -16,11 +16,9 @@ analyst's answer to a prompt about the page content (``mode='agentic'``); use
 requires the optional ``web-fetch`` extra (``pip install 'strands-agents[web-fetch]'``)
 and is imported lazily, so accessing it without that extra raises :class:`ImportError`.
 
-The :data:`python_repl` tool runs model-generated Python in a
-`Monty <https://pydantic.dev/docs/monty/>`_ sandbox. Session state persists
-across calls via :attr:`~strands.Agent.state`. It requires the optional
-``python-repl`` extra (``pip install 'strands-agents[python-repl]'``)
-and is imported lazily.
+The :data:`python_repl` tool runs Python through the agent's sandbox; use :func:`make_python_repl`
+to bind a sandbox or choose the interpreter. Each call runs in a fresh process,
+so in-memory state does not persist between calls.
 
 The :func:`make_a2a_client` factory creates a tool that discovers and sends messages to remote A2A-protocol
 agents. Supply the required ``allowed_endpoints`` list — each entry is either a bare URL string or a
@@ -60,6 +58,7 @@ from .handoff_to_user import HANDOFF_INTERRUPT_NAME, handoff_to_user, make_hando
 from .http_request import http_request, make_http_request
 from .mcp_router import make_mcp_router
 from .notebook import make_notebook, notebook
+from .python_repl import make_python_repl, python_repl
 from .shell import make_shell, shell
 from .sleep import make_sleep, sleep
 from .subagent import make_subagent, subagent
@@ -85,15 +84,6 @@ def __getattr__(name: str) -> Any:
         if name == "web_fetch":
             return web_fetch
         return make_web_fetch
-    # python_repl pulls the optional ``python-repl`` extra, so it is lazy-loaded to keep
-    # the base import free of those dependencies.
-    if name in ("make_python_repl", "python_repl"):
-        # python_repl is prefixed with '_' to avoid name collision with its exported tool.
-        from ._python_repl import make_python_repl, python_repl
-
-        if name == "python_repl":
-            return python_repl
-        return make_python_repl
     # a2a_client pulls the optional ``a2a`` extra, so it is lazy-loaded to keep
     # the base import free of those dependencies.
     if name == "make_a2a_client":
@@ -112,11 +102,13 @@ __all__ = [
     "make_handoff_to_user",
     "make_http_request",
     "make_notebook",
+    "make_python_repl",
     "make_mcp_router",
     "make_shell",
     "make_sleep",
     "make_subagent",
     "notebook",
+    "python_repl",
     "shell",
     "sleep",
     "subagent",

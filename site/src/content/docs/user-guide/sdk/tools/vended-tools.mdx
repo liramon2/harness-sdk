@@ -25,7 +25,7 @@ sourceLinks:
   - path: strands-py/src/strands/vended_tools/a2a_client/a2a_client.py
   - path: strands-py/src/strands/vended_tools/subagent/subagent.py
   - path: strands-py/src/strands/experimental/tools/stop/stop.py
-  - path: strands-py/src/strands/vended_tools/_python_repl/_python_repl.py
+  - path: strands-py/src/strands/vended_tools/python_repl/python_repl.py
 ---
 
 Vended tools are pre-built tools included directly in the Strands Harness SDK for common agent tasks like file operations, shell commands, HTTP requests, and persistent notes.
@@ -56,7 +56,7 @@ Each tool is imported from its own subpath under `@strands-agents/sdk/vended-too
 | [Stop](#stop-experimental) | Gracefully end the agent loop when the task is complete | Python, TypeScript (Node.js, browsers) |
 | [Web Fetch](#web-fetch) | Fetch a URL and return cleaned markdown for a model to read | Python, TypeScript (Node.js) |
 | [A2A Client](#a2a-client) | Discover and send messages to remote A2A-protocol agents | Python, TypeScript (Node.js, browsers) |
-| [Python REPL](#python-repl) | Execute Python code in a sandboxed interpreter with persistent session state | Python |
+| [Python REPL](#python-repl) | Execute Python code through the agent's sandbox | Python |
 | [Subagent](#subagent) | Delegate a self-contained task to a child agent | Python |
 
 ### File editor
@@ -735,23 +735,12 @@ Full API reference: [TypeScript](https://github.com/strands-agents/harness-sdk/b
 
 ### Python REPL
 
-Runs model-generated Python code in a [Monty](https://github.com/pydantic/monty) sandbox. Session state (variables, imports, and definitions) persists across calls via agent state, so the model can build on earlier results without redefining everything each turn. Pass `reset_state=True` to start from a clean namespace.
+Runs model-generated Python through the agent's [sandbox](../sandbox/index.mdx) by calling `sandbox.execute_code(code, "python3")`. It returns `output` (stdout), `error` (stderr, including tracebacks), and `exit_code`. Each call runs in a fresh interpreter, so variables, imports, and definitions do not persist across calls. Files written to the sandbox filesystem do persist, so the model can checkpoint intermediate results to disk and load them in a later call.
 
 _Supported in: Python only._
 
-:::note[Install required]
-`python_repl` requires the optional `python-repl` extra:
-
-```bash
-pip install 'strands-agents[python-repl]'
-```
-:::
-
-:::note[Security posture]
-Monty is a language-level sandbox, not an OS-level one. The bytecode has no
-host operations, so untrusted code cannot reach the filesystem, network, or
-environment. For an OS boundary around the tools the code calls, run the agent
-in a [sandboxed environment](../sandbox/index.mdx).
+:::caution[Security Warning]
+This tool executes arbitrary Python code. Without a [Sandbox](../sandbox/index.mdx), code runs with the full permissions of the process. Only use with trusted input and consider running in a [sandboxed environment](../sandbox/index.mdx) for production.
 :::
 
 ```python
@@ -762,18 +751,16 @@ agent = Agent(tools=[python_repl])
 agent("Use python_repl to compute the first 10 Fibonacci numbers and print them.")
 ```
 
-**Custom limits:**
+**Bound sandbox or custom interpreter:**
 
 ```python
 from strands import Agent
+from strands.sandbox.docker import DockerSandbox
 from strands.vended_tools import make_python_repl
 
 python_repl = make_python_repl(
-    max_duration_secs=10.0,
-    max_memory_bytes=64 * 1024 * 1024,
-    max_output_chars=10_000,
-    max_session_bytes=5 * 1024 * 1024,
-    timeout_secs=30.0,
+    sandbox=DockerSandbox("my-container"),  # bind at creation instead of reading agent.sandbox
+    language="python3.12",  # interpreter on the sandbox's PATH
 )
 agent = Agent(tools=[python_repl])
 ```
