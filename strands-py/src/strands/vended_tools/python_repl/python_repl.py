@@ -67,8 +67,17 @@ def make_python_repl(
         Args:
             code: Python source to execute.
             tool_context: Injected by the framework. Not user-facing.
-            timeout: Timeout in seconds (default: 120).
+            timeout: Timeout in seconds (default: 120). Must be positive.
+
+        Raises:
+            ValueError: If ``timeout`` is not positive.
+            SandboxTimeoutError: If execution exceeds ``timeout``. The message carries the partial
+                output as JSON with the success field names and ``exit_code``.
+            PythonReplError: If the sandbox fails to run the code.
         """
+        # The model sets timeout; reject non-positive values rather than rely on backend-specific semantics.
+        if timeout <= 0:
+            raise ValueError(f"timeout must be a positive number of seconds, got {timeout}")
         active = sandbox if sandbox is not None else tool_context.agent.sandbox
         try:
             result = await active.execute_code(code, language, timeout=timeout)

@@ -30,7 +30,8 @@ class PythonReplError(RuntimeError):
 PYTHON_REPL_DESCRIPTION = (
     "Executes Python code and returns output (stdout), error (stderr), and exit_code (non-zero means the "
     "code failed). Each call runs in a fresh interpreter; variables, imports, and definitions do not persist "
-    "across calls. Files written to disk do persist, so save intermediate results to files when later calls "
-    "need them. Use print() to surface values."
+    "across calls. Files written to the working directory persist while the sandbox is alive, so save "
+    "intermediate results to files when later calls need them. stdin is not available (input() fails). "
+    "Use print() to surface values."
 )
 """Description for the Python REPL tool."""
