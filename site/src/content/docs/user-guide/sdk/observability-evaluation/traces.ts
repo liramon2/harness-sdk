@@ -1,5 +1,9 @@
 import { Agent } from '@strands-agents/sdk'
-import { setupTracer, getTracer } from '@strands-agents/sdk/telemetry'
+import {
+  setupTracer,
+  getTracer,
+  setupBaggageProcessor,
+} from '@strands-agents/sdk/telemetry'
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 import {
   BatchSpanProcessor,
@@ -70,6 +74,26 @@ function customAttributes() {
     },
   })
   // --8<-- [end:custom_attributes]
+}
+
+function baggagePropagation() {
+  // --8<-- [start:baggage_propagation]
+  const agent = new Agent({
+    systemPrompt: 'You are a helpful assistant.',
+    baggageAttributes: {
+      'tenant.id': 'acme',
+      env: 'production',
+    },
+  })
+  // --8<-- [end:baggage_propagation]
+}
+
+function baggageSpanProcessor() {
+  // --8<-- [start:baggage_span_processor]
+  // Register before setupTracer so the processor is added to the tracer provider
+  setupBaggageProcessor((key) => key.startsWith('tenant.'))
+  setupTracer({ exporters: { otlp: true } })
+  // --8<-- [end:baggage_span_processor]
 }
 
 function configuringExporters() {

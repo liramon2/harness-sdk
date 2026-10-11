@@ -61,6 +61,12 @@ if (typeof globalThis.process?.getBuiltinModule === 'function') {
   }
 }
 
+/** Receives a baggage key and returns true if the entry should be stamped onto spans. */
+export type BaggageKeyPredicate = (key: string) => boolean
+
+/** A single {@link BaggageKeyPredicate} or a list of them (a key is stamped if any predicate matches). */
+export type BaggageKeyPredicates = BaggageKeyPredicate | readonly BaggageKeyPredicate[]
+
 const DEFAULT_SERVICE_NAMESPACE = 'strands'
 const DEFAULT_DEPLOYMENT_ENVIRONMENT = 'development'
 
@@ -145,6 +151,7 @@ export interface TracerConfig {
 
 let _provider: BasicTracerProvider | null = null
 let _customProvider: TracerProvider | null = null
+let _baggageProcessor: SpanProcessor | null = null
 
 /**
  * Set up the tracer provider with the given configuration.
@@ -179,6 +186,7 @@ export function setupTracer(config: TracerConfig = {}): TracerProvider {
   }
 
   const spanProcessors: SpanProcessor[] = []
+  if (_baggageProcessor) spanProcessors.push(_baggageProcessor)
   if (config.exporters?.otlp) spanProcessors.push(new BatchSpanProcessor(new OTLPTraceExporter()))
   if (config.exporters?.console) spanProcessors.push(new SimpleSpanProcessor(new ConsoleSpanExporter()))
   _provider = new DefaultTracerProvider({ resource: getOtelResource(), spanProcessors })
@@ -196,6 +204,52 @@ export function setupTracer(config: TracerConfig = {}): TracerProvider {
   }
 
   return _provider
+}
+
+/**
+ * Set up a baggage span processor that stamps OTel baggage entries onto spans as attributes when they start.
+ *
+ * Requires the optional `@opentelemetry/baggage-span-processor` package; if it is not installed this logs and
+ * returns undefined. Call it before {@link setupTracer}: OTel JS tracer providers only accept span processors at
+ * construction, so the processor is added to the provider `setupTracer` creates. For a custom provider, pass the
+ * returned processor in its `spanProcessors`.
+ *
+ * @param baggageKeyPredicate - Predicate, or list of predicates, selecting which baggage keys to stamp. Defaults to all keys.
+ * @returns The registered span processor, or undefined if it could not be created
+ *
+ * @example
+ * ```typescript
+ * import { setupBaggageProcessor, setupTracer } from '\@strands-agents/sdk/telemetry'
+ *
+ * setupBaggageProcessor((key) => key.startsWith('tenant.'))
+ * setupTracer({ exporters: { otlp: true } })
+ * ```
+ */
+export function setupBaggageProcessor(baggageKeyPredicate?: BaggageKeyPredicates): SpanProcessor | undefined {
+  if (_provider || _customProvider) {
+    logger.warn('tracer provider already initialized | call setupBaggageProcessor before setupTracer')
+    return undefined
+  }
+  try {
+    const { BaggageSpanProcessor, ALLOW_ALL_BAGGAGE_KEYS } = loadBaggageSpanProcessorModule()
+    logger.info('enabling baggage span processor')
+    _baggageProcessor = new BaggageSpanProcessor(toKeyPredicate(baggageKeyPredicate) ?? ALLOW_ALL_BAGGAGE_KEYS)
+    return _baggageProcessor
+  } catch (err) {
+    logger.warn(`error=<${err}> | failed to configure baggage span processor`)
+    return undefined
+  }
+}
+
+function loadBaggageSpanProcessorModule(): typeof import('@opentelemetry/baggage-span-processor') {
+  const nodeModule = globalThis.process?.getBuiltinModule?.('node:module') as typeof import('module') | undefined
+  if (!nodeModule) throw new Error('@opentelemetry/baggage-span-processor requires a Node.js runtime')
+  return nodeModule.createRequire(import.meta.url)('@opentelemetry/baggage-span-processor')
+}
+
+function toKeyPredicate(predicates: BaggageKeyPredicates | undefined): BaggageKeyPredicate | undefined {
+  if (predicates === undefined || typeof predicates === 'function') return predicates
+  return (key) => predicates.some((predicate) => predicate(key))
 }
 
 /**

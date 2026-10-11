@@ -404,6 +404,50 @@ agent = Agent(
 </Tab>
 </Tabs>
 
+### Baggage Propagation
+
+Use `baggage_attributes` (Python) or `baggageAttributes` (TypeScript) to propagate key-value pairs across process boundaries via the W3C `baggage` header. Unlike `trace_attributes`, baggage is not stamped onto spans. It travels through the OTel context and is available to downstream services.
+
+<Tabs>
+<Tab label="Python">
+```python
+agent = Agent(
+    system_prompt="You are a helpful assistant.",
+    baggage_attributes={
+        "tenant.id": "acme",
+        "env": "production",
+    },
+)
+```
+</Tab>
+<Tab label="TypeScript">
+
+```typescript
+--8<-- "user-guide/sdk/observability-evaluation/traces_imports.ts:baggage_propagation_imports"
+
+--8<-- "user-guide/sdk/observability-evaluation/traces.ts:baggage_propagation"
+```
+</Tab>
+</Tabs>
+
+To also record baggage entries as span attributes, enable the baggage span processor. Pass a predicate, or a list of predicates, to choose which keys are stamped; omit it to stamp every key. In TypeScript, install the optional `@opentelemetry/baggage-span-processor` package and call `setupBaggageProcessor` before `setupTracer`.
+
+<Tabs>
+<Tab label="Python">
+```python
+StrandsTelemetry().setup_otlp_exporter().setup_baggage_processor(lambda key: key.startswith("tenant."))
+```
+</Tab>
+<Tab label="TypeScript">
+
+```typescript
+--8<-- "user-guide/sdk/observability-evaluation/traces_imports.ts:baggage_span_processor_imports"
+
+--8<-- "user-guide/sdk/observability-evaluation/traces.ts:baggage_span_processor"
+```
+</Tab>
+</Tabs>
+
 ### Custom Spans
 
 You can access the configured tracer to create your own custom spans alongside the auto-instrumented ones:

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import type { Attributes, Tracer } from '@opentelemetry/api'
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 import { ConsoleSpanExporter } from '@opentelemetry/sdk-trace-base'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
@@ -225,5 +226,78 @@ describe('setupMeter (node-specific)', () => {
 
       expect(provider).toBe(customProvider)
     })
+  })
+})
+
+describe('setupBaggageProcessor (node-specific)', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.clearAllMocks()
+  })
+
+  // Starts a span under baggage {tenant.id, session.id, other} and returns its stamped attributes.
+  async function stampedAttributes(provider: { getTracer(name: string): Tracer }): Promise<Attributes> {
+    const { context, propagation } = await import('@opentelemetry/api')
+    const baggage = propagation.createBaggage({
+      'tenant.id': { value: 'acme' },
+      'session.id': { value: 's-1' },
+      other: { value: 'x' },
+    })
+    const span = provider.getTracer('test').startSpan('probe', {}, propagation.setBaggage(context.active(), baggage))
+    span.end()
+    return (span as unknown as { attributes: Attributes }).attributes
+  }
+
+  it.each([
+    ['no predicate', undefined, { 'tenant.id': 'acme', 'session.id': 's-1', other: 'x' }],
+    ['single predicate', (key: string) => key.startsWith('tenant.'), { 'tenant.id': 'acme' }],
+    [
+      'predicate list',
+      [(key: string) => key === 'session.id', (key: string) => key.startsWith('tenant.')],
+      { 'tenant.id': 'acme', 'session.id': 's-1' },
+    ],
+  ])('stamps baggage selected by %s onto spans of the provider setupTracer creates', async (_, predicate, expected) => {
+    const telemetry = await import('../index.js')
+
+    const processor = telemetry.setupBaggageProcessor(predicate)
+    const provider = telemetry.setupTracer()
+
+    expect(processor).toBeDefined()
+    expect(await stampedAttributes(provider)).toStrictEqual(expected)
+  })
+
+  it('returns a processor usable with a custom provider', async () => {
+    const telemetry = await import('../index.js')
+
+    const processor = telemetry.setupBaggageProcessor()!
+    const customProvider = new NodeTracerProvider({ spanProcessors: [processor] })
+
+    expect(await stampedAttributes(customProvider)).toMatchObject({ 'tenant.id': 'acme' })
+  })
+
+  it('warns and no-ops when called after setupTracer', async () => {
+    const { logger } = await import('../../logging/index.js')
+    const warnSpy = vi.spyOn(logger, 'warn')
+    const telemetry = await import('../index.js')
+
+    const provider = telemetry.setupTracer()
+    const processor = telemetry.setupBaggageProcessor()
+
+    expect(processor).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('call setupBaggageProcessor before setupTracer'))
+    expect(await stampedAttributes(provider)).toStrictEqual({})
+  })
+
+  it('logs and no-ops when the baggage span processor cannot be loaded', async () => {
+    const { logger } = await import('../../logging/index.js')
+    const warnSpy = vi.spyOn(logger, 'warn')
+    const telemetry = await import('../index.js')
+    vi.spyOn(process, 'getBuiltinModule').mockReturnValueOnce(undefined)
+
+    const processor = telemetry.setupBaggageProcessor()
+
+    expect(processor).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('failed to configure baggage span processor'))
+    expect(await stampedAttributes(telemetry.setupTracer())).toStrictEqual({})
   })
 })

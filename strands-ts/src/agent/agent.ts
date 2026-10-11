@@ -101,8 +101,10 @@ import { MemoryManager } from '../memory/memory-manager.js'
 import type { MemoryManagerConfig } from '../memory/index.js'
 import { SessionManager } from '../session/session-manager.js'
 import { Tracer } from '../telemetry/tracer.js'
+import { runInContext } from '../telemetry/utils.js'
 import { AgentMetrics, Meter } from '../telemetry/meter.js'
-import type { AttributeValue } from '@opentelemetry/api'
+import { context as otelContext, propagation } from '@opentelemetry/api'
+import type { AttributeValue, Context } from '@opentelemetry/api'
 import { logger } from '../logging/logger.js'
 import { CancelledError, CheckpointError } from '../errors.js'
 import { DefaultModelRetryStrategy } from '../retry/default-model-retry-strategy.js'
@@ -275,6 +277,12 @@ export type AgentConfig = {
    * Telemetry must be enabled globally via telemetry.setupTracer() for these to take effect.
    */
   traceAttributes?: Record<string, AttributeValue>
+  /**
+   * OpenTelemetry baggage entries attached to the context for the whole invocation.
+   * Baggage propagates to downstream services via the W3C `baggage` header and is visible to span processors
+   * (see `setupBaggageProcessor` in `@strands-agents/sdk/telemetry` to stamp entries onto spans).
+   */
+  baggageAttributes?: Record<string, string>
   /**
    * Optional name for the agent. Defaults to "Strands Agent".
    */
@@ -471,6 +479,11 @@ export class Agent implements LocalAgent, InvokableAgent {
    */
   public readonly storage?: Storage | undefined
 
+  /**
+   * OpenTelemetry baggage entries attached to the context for every invocation.
+   */
+  public readonly baggageAttributes: Record<string, string>
+
   private readonly _sandbox: Sandbox | false | undefined
 
   /**
@@ -556,6 +569,7 @@ export class Agent implements LocalAgent, InvokableAgent {
     this.contextManager = ContextManager.from(config?.contextManager)
     this.sessionManager = config?.sessionManager
     this.storage = config?.storage
+    this.baggageAttributes = { ...config?.baggageAttributes }
     this.memoryManager =
       config?.memoryManager instanceof MemoryManager
         ? config.memoryManager
@@ -1179,6 +1193,28 @@ export class Agent implements LocalAgent, InvokableAgent {
    * ```
    */
   public async *stream(
+    args: InvokeArgs,
+    options?: InvokeOptions
+  ): AsyncGenerator<AgentStreamEvent, AgentResult, undefined> {
+    if (Object.keys(this.baggageAttributes).length === 0) return yield* this._streamInvocation(args, options)
+    // Baggage is current for span start (processors see it) and the whole invocation.
+    const baggageCtx = this._createBaggageContext()
+    return yield* runInContext(baggageCtx, this._streamInvocation(args, options))
+  }
+
+  /**
+   * Builds a context carrying {@link Agent.baggageAttributes} on top of the active context's baggage.
+   */
+  private _createBaggageContext(): Context {
+    const active = otelContext.active()
+    let baggage = propagation.getBaggage(active) ?? propagation.createBaggage()
+    for (const [key, value] of Object.entries(this.baggageAttributes)) {
+      baggage = baggage.setEntry(key, { value })
+    }
+    return propagation.setBaggage(active, baggage)
+  }
+
+  private async *_streamInvocation(
     args: InvokeArgs,
     options?: InvokeOptions
   ): AsyncGenerator<AgentStreamEvent, AgentResult, undefined> {
