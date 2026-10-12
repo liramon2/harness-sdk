@@ -1,6 +1,14 @@
+from unittest.mock import Mock
+
 import pytest
 
-from strands.interrupt import _AGENT_STREAM_INTERRUPT_ID_PREFIX, Interrupt, PendingToolExecution, _InterruptState
+from strands.interrupt import (
+    _AGENT_STREAM_INTERRUPT_ID_PREFIX,
+    Interrupt,
+    PendingToolExecution,
+    _InterruptState,
+    _NestedInterruptState,
+)
 from strands.types.exceptions import SessionException
 
 
@@ -431,3 +439,42 @@ def test_interrupt_state_from_dict_drops_retained_invocation_scoped_responses():
 
     data["activated"] = True
     assert set(_InterruptState.from_dict(data).interrupts) == {retained.id}
+
+
+@pytest.fixture
+def nested_agent():
+    agent = Mock()
+    agent.take_snapshot.return_value.to_dict.return_value = {"turn": "stored"}
+    return agent
+
+
+def test_nested_interrupt_state_scopes_turns_and_responses_per_tool_call(nested_agent):
+    state = _InterruptState()
+    # "a:" must not prefix-match the ids of tool call "a:b"
+    call_a = _NestedInterruptState(state, "turns", "v1:ns", "a")
+    call_a_b = _NestedInterruptState(state, "turns", "v1:ns", "a:b")
+
+    raised = call_a.store(nested_agent, [Interrupt("i1", "confirm")])
+    call_a_b.store(nested_agent, [Interrupt("i1", "confirm")])
+    state.context["responses"] = [
+        {"interruptResponse": {"interruptId": "v1:ns:a:i1", "response": "yes"}},
+        {"interruptResponse": {"interruptId": "v1:ns:a%3Ab:i1", "response": "no"}},
+    ]
+
+    assert [i.id for i in raised] == ["v1:ns:a:i1"]
+    assert state.context["turns"] == {"a": {"turn": "stored"}, "a:b": {"turn": "stored"}}
+    assert call_a.responses() == [{"interruptResponse": {"interruptId": "i1", "response": "yes"}}]
+    assert call_a_b.responses() == [{"interruptResponse": {"interruptId": "i1", "response": "no"}}]
+
+
+def test_nested_interrupt_state_bumps_version_only_when_the_turn_changes(nested_agent):
+    state = _InterruptState()
+    nested = _NestedInterruptState(state, "turns", "v1:ns", "t")
+
+    nested.clear()
+    assert state._version == 0
+
+    nested.store(nested_agent, [])
+    nested.clear()
+    assert state._version == 2
+    assert state.context["turns"] == {}

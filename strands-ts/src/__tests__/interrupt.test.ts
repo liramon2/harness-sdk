@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { Interrupt, InterruptError, InterruptState, interruptFromAgent } from '../interrupt.js'
+import type { Agent } from '../agent/agent.js'
+import { Interrupt, InterruptError, InterruptState, NestedInterruptState, interruptFromAgent } from '../interrupt.js'
 import { InterruptResponseContent } from '../types/interrupt.js'
 
 describe('Interrupt', () => {
@@ -330,5 +331,27 @@ describe('interruptFromAgent', () => {
       response: null,
       source: 'tool',
     })
+  })
+})
+
+describe('NestedInterruptState', () => {
+  const agent = { takeSnapshot: () => ({ turn: 'stored' }) } as unknown as Agent
+
+  it('scopes stored turns, registered interrupts, and responses to each tool call', () => {
+    const state = new InterruptState()
+    // 'a:' must not prefix-match the ids of tool call 'a:b'
+    const callA = new NestedInterruptState(state, 'turns', 'ns', 'a')
+    const callAB = new NestedInterruptState(state, 'turns', 'ns', 'a:b')
+
+    callA.store(agent, [new Interrupt({ id: 'i1', name: 'confirm' })])
+    callAB.store(agent, [new Interrupt({ id: 'i1', name: 'confirm' })])
+    state.resumeResponses = [new InterruptResponseContent({ interruptId: 'ns:a:i1', response: 'yes' })]
+
+    expect(Object.keys(state.interrupts)).toEqual(['ns:a:i1', 'ns:a%3Ab:i1'])
+    expect(state.context.turns).toEqual({ a: { turn: 'stored' }, 'a:b': { turn: 'stored' } })
+    expect(callA.responses()).toEqual([new InterruptResponseContent({ interruptId: 'i1', response: 'yes' })])
+    expect(() => callAB.responses()).toThrow(
+      expect.objectContaining({ interrupts: [state.interrupts['ns:a%3Ab:i1']] }) as unknown as InterruptError
+    )
   })
 })

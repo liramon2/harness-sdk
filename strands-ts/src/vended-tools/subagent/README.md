@@ -80,4 +80,4 @@ Only `task` is always present; the others appear depending on the configured pol
 
 Returns the child's final response as text. Returns an error result when `task` is missing, `agent_type` is unknown, the depth limit is reached, or the child throws or is cancelled.
 
-If the child stops on an interrupt, it is raised on the parent with the id `subagent:<toolUseId>:<childInterruptId>` (`toolUseId` URI-encoded). Resuming the parent resumes the same child; the child is held in memory only, so it cannot be resumed after a process restart.
+If the child stops on an interrupt, it is raised on the parent with the id `subagent:<toolUseId>:<childInterruptId>` (`toolUseId` URI-encoded). The child's interrupted turn is stored in the parent's interrupt state, so it is persisted with the parent's session and resumes after a process restart: on resume the child is rebuilt from the same tool input and its turn restored. A custom `builder` should therefore build the same agent for the same spec.
