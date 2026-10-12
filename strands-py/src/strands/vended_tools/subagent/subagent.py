@@ -140,8 +140,7 @@ def _build_schema(
 class _SubagentTool(AgentTool):
     """Streams a fresh per-call child and propagates its interrupts to the parent for resume.
 
-    An interrupted child's turn is stored in the parent's interrupt state, so it resumes after the
-    parent is rehydrated; on resume the child is rebuilt from the same tool input and restored.
+    An interrupted child's turn is stored on the parent, so it resumes after rehydration.
     """
 
     def __init__(
@@ -304,22 +303,33 @@ class _SubagentTool(AgentTool):
         """Rebuild the interrupted child from the same tool input and restore its stored turn."""
         spec = self._resolve(raw)
         build = self._builder or _default_builder(parent)  # type: ignore[arg-type]
-        child = build(spec)
-        pending = state.restore(child)
-        if pending:
-            return ToolInterruptEvent(tool_use, pending)
-        if not child._interrupt_state.activated:
-            state.clear()
+        try:
+            child = build(spec)
+            state.restore(child)
+        except Exception as error:
             logger.warning(
-                "tool_name=<%s>, tool_use_id=<%s> | interrupted subagent is not available",
+                "tool_name=<%s>, tool_use_id=<%s> | failed to resume interrupted subagent: %s",
                 self._name,
                 tool_use["toolUseId"],
+                error,
             )
-            return (
-                "Subagent did NOT run and the response was NOT applied: its interrupted turn is not available. "
-                "Do not report the delegated task as completed."
-            )
-        return child, state.responses()
+            # Keep the turn so the answer can be applied on a later attempt.
+            pending = state.unanswer()
+            if pending:
+                return ToolInterruptEvent(tool_use, pending)
+        else:
+            if child._interrupt_state.activated:
+                return child, state.responses()
+        state.clear()
+        logger.warning(
+            "tool_name=<%s>, tool_use_id=<%s> | interrupted subagent is not available",
+            self._name,
+            tool_use["toolUseId"],
+        )
+        return (
+            "Subagent did NOT run and the response was NOT applied: its interrupted turn is not available. "
+            "Do not report the delegated task as completed; if it is still needed, delegate it again."
+        )
 
     def _finalize_result(
         self, tool_use: ToolUse, child: Agent, result: Any, state: _NestedInterruptState | None
@@ -408,9 +418,9 @@ def make_subagent(
     Each axis accepts a policy from :mod:`~strands.multiagent.spec` that controls what
     the model sees and can supply. Omitted axes use sensible defaults.
 
-    A child's interrupt is raised on the parent as ``v1:subagent:<toolUseId>:<childInterruptId>``,
-    and its interrupted turn is persisted with the parent's session. On resume the child is rebuilt
-    from the same tool input, so a custom *builder* should build the same agent for the same spec.
+    Child interrupts surface on the parent; answer them with the ``id`` as given. On resume *builder*
+    rebuilds the child and only its messages and state are restored, so a different agent can drop an
+    approval gate.
 
     Raises:
         ValueError: If *max_depth* < 1, *name* or *description* is empty, or a ``Choice`` axis violates

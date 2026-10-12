@@ -729,6 +729,40 @@ describe('subagent tool', () => {
       expect(Object.keys(turns)).toEqual(['t1'])
     })
 
+    it('raises the interrupt again and keeps the turn when the builder fails on resume', async () => {
+      vi.spyOn(logger, 'warn').mockImplementation(() => {})
+      const confirmTool = createMockTool('confirmTool', (context) => {
+        context.interrupt({ name: 'confirm', reason: 'Please confirm' })
+        return 'ok'
+      })
+      let fail = false
+      const tool = makeSubagent({
+        builder: () => {
+          if (fail) throw new Error('mcp down')
+          const model = new MockMessageModel().addTurn({
+            type: 'toolUseBlock',
+            name: 'confirmTool',
+            toolUseId: 'inner-1',
+            input: {},
+          })
+          return new Agent({ model, tools: [confirmTool], printer: false })
+        },
+      })
+      const model = new MockMessageModel()
+        .addTurn({ type: 'toolUseBlock', name: 'subagent', toolUseId: 't1', input: { task: 'confirm it' } })
+        .addTurn({ type: 'textBlock', text: 'parent done' })
+      const parent = new Agent({ model, tools: [tool], printer: false })
+      await parent.invoke('go')
+      fail = true
+
+      const result = await parent.invoke([new InterruptResponseContent({ interruptId, response: 'yes' })])
+
+      expect(result.stopReason).toBe('interrupt')
+      expect(result.interrupts).toMatchObject([{ id: interruptId }])
+      expect(result.interrupts![0]!.response).toBeUndefined()
+      expect(Object.keys(parent._interruptState.context['subagentInterruptedTurns'] as object)).toEqual(['t1'])
+    })
+
     it('reports the turn as unavailable when an unloadable stored turn has no readable interrupt state', async () => {
       const error = vi.spyOn(logger, 'error').mockImplementation(() => {})
       vi.spyOn(logger, 'warn').mockImplementation(() => {})

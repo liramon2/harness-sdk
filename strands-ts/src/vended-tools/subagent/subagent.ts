@@ -55,7 +55,11 @@ const SENTINEL = /<(\/?)parent_context>/g
 
 /** Options for {@link makeSubagent}. */
 export interface MakeSubagentOptions {
-  /** Turns a resolved spec into a child agent. Defaults to a builder that inherits from the parent. */
+  /**
+   * Turns a resolved spec into a child agent. Defaults to a builder that inherits from the parent.
+   * Also rebuilds the child on resume, restoring only its messages and state, so a different agent
+   * can drop an approval gate.
+   */
   builder?: AgentBuilder
   /** Named roles the model selects via `agent_type`. @defaultValue `{ generalist: GENERALIST }` */
   presets?: Record<string, Preset>
@@ -283,8 +287,7 @@ interface SubagentToolConfig {
 /**
  * Streams a fresh per-call child and propagates its interrupts to the parent for resume.
  *
- * An interrupted child's turn is stored in the parent's interrupt state, so it resumes after the
- * parent is rehydrated; on resume the child is rebuilt from the same tool input and restored.
+ * An interrupted child's turn is stored on the parent, so it resumes after rehydration.
  *
  * @internal
  */
@@ -414,7 +417,7 @@ class SubagentTool extends Tool {
    * Rebuilds the interrupted child from the same tool input and restores its stored turn.
    *
    * @returns The child and its interrupt responses, or an error message if its turn is not available.
-   * @throws InterruptError if none of this child's interrupts were answered, or its turn cannot be loaded.
+   * @throws InterruptError if none of this child's interrupts were answered, or it cannot be rebuilt or restored.
    */
   private _prepareResume(
     toolUseId: string,
@@ -423,17 +426,25 @@ class SubagentTool extends Tool {
     state: NestedInterruptState
   ): { child: Agent; prompt: InvokeArgs } | string {
     const prompt = state.responses()
-    const child = this._build(this._resolve(raw), parent)
-    state.restore(child)
-    if (!child._interruptState.activated) {
-      state.clear()
-      logger.warn(`tool_name=<${this.name}>, tool_use_id=<${toolUseId}> | interrupted subagent is not available`)
-      return (
-        'Subagent did NOT run and the response was NOT applied: its interrupted turn is not available. ' +
-        'Do not report the delegated task as completed.'
+    const spec = this._resolve(raw)
+    try {
+      const child = this._build(spec, parent)
+      state.restore(child)
+      if (child._interruptState.activated) return { child, prompt }
+    } catch (error) {
+      logger.warn(
+        `tool_name=<${this.name}>, tool_use_id=<${toolUseId}>, error=<${String(error)}> | failed to resume interrupted subagent`
       )
+      // Keep the turn so the answer can be applied on a later attempt.
+      const pending = state.unanswer()
+      if (pending.length > 0) throw new InterruptError(pending)
     }
-    return { child, prompt }
+    state.clear()
+    logger.warn(`tool_name=<${this.name}>, tool_use_id=<${toolUseId}> | interrupted subagent is not available`)
+    return (
+      'Subagent did NOT run and the response was NOT applied: its interrupted turn is not available. ' +
+      'Do not report the delegated task as completed; if it is still needed, delegate it again.'
+    )
   }
 
   private _build(spec: AgentSpec, parent: Agent | undefined): Agent {

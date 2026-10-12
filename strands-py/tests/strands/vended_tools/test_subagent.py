@@ -1,10 +1,12 @@
 """Tests for the subagent tool: schema derivation, context modes, interrupts, and safety."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 import strands
+from strands import ToolContext
 from strands.agent.agent import Agent
 from strands.agent.state import AgentState
 from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
@@ -391,7 +393,7 @@ def confirming_parent(tmp_path):
             if event.interrupt("confirm", reason="confirm?") != "APPROVE":
                 event.cancel_tool = "not approved"
 
-    def build(child_responses, parent_responses):
+    def build(child_responses, parent_responses, parent_tools=()):
         child_model = MockedModelProvider(child_responses)
         tool = make_subagent(
             builder=lambda spec: Agent(
@@ -401,7 +403,7 @@ def confirming_parent(tmp_path):
         )
         return Agent(
             model=MockedModelProvider(parent_responses),
-            tools=[tool],
+            tools=[tool, *parent_tools],
             callback_handler=None,
             session_manager=FileSessionManager("s1", storage_dir=str(tmp_path)),
         )
@@ -460,6 +462,57 @@ def test_unloadable_turn_raises_the_interrupt_again_and_keeps_the_turn(confirmin
     assert [(i.id, i.response) for i in result.interrupts] == [(interrupt_id, None)]
     assert set(parent._interrupt_state.context[_INTERRUPTED_TURNS_KEY]) == {"t1"}
     assert executions == []
+
+
+def test_builder_failure_on_resume_raises_the_interrupt_again_and_keeps_the_turn(confirming_parent):
+    _, interrupted, executions = confirming_parent
+    parent, interrupt_id = interrupted()
+    tool = parent.tool_registry.registry["subagent"]
+    builder = tool._builder
+    tool._builder = Mock(side_effect=ConnectionError("mcp down"))
+
+    result = parent(_answer(interrupt_id))
+
+    assert [(i.id, i.response) for i in result.interrupts] == [(interrupt_id, None)]
+    assert set(parent._interrupt_state.context[_INTERRUPTED_TURNS_KEY]) == {"t1"}
+
+    tool._builder = builder
+    result = parent(_answer(interrupt_id))
+
+    assert str(result).strip() == "parent done"
+    assert executions == ["prod"]
+
+
+def test_finished_child_clears_its_turn_while_a_sibling_still_interrupts(confirming_parent):
+    build, _, executions = confirming_parent
+
+    @strands.tool(context=True)
+    def ask(tool_context: ToolContext) -> str:
+        """Ask the user."""
+        return tool_context.interrupt("ask")
+
+    parent = build(
+        [_tool_use_message("c1", "dangerous_action", {"target": "prod"}), _text_message("child done")],
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "t1", "name": "subagent", "input": {"task": "do it"}}},
+                    {"toolUse": {"toolUseId": "t2", "name": "ask", "input": {}}},
+                ],
+            }
+        ],
+        parent_tools=[ask],
+    )
+    result = parent("go")
+    confirm_id = next(i.id for i in result.interrupts if i.name == "confirm")
+
+    # Only the child is answered, so the cycle ends in an interrupt again and the context is kept.
+    result = parent(_answer(confirm_id))
+
+    assert [i.name for i in result.interrupts] == ["ask"]
+    assert executions == ["prod"]
+    assert parent._interrupt_state.context[_INTERRUPTED_TURNS_KEY] == {}
 
 
 @pytest.mark.parametrize("turn", [None, "garbage", {"data": "x"}, {"data": {"interrupt_state": {"interrupts": 1}}}])
