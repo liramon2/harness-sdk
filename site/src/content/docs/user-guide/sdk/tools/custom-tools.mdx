@@ -305,7 +305,7 @@ agent = Agent(tools=[get_self_name, get_tool_use_id, get_invocation_state], name
 
 agent("What is your name?")
 agent("What is the tool use id?")
-agent("What is the invocation state?", custom_data="You're the best agent ;)")
+agent("What is the invocation state?", invocation_state={"custom_data": "You're the best agent ;)"})
 ```
 </Tab>
 <Tab label="TypeScript">
