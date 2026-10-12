@@ -101,10 +101,9 @@ import { MemoryManager } from '../memory/memory-manager.js'
 import type { MemoryManagerConfig } from '../memory/index.js'
 import { SessionManager } from '../session/session-manager.js'
 import { Tracer } from '../telemetry/tracer.js'
-import { runInContext } from '../telemetry/utils.js'
 import { AgentMetrics, Meter } from '../telemetry/meter.js'
 import { context as otelContext, propagation } from '@opentelemetry/api'
-import type { AttributeValue, Context } from '@opentelemetry/api'
+import type { AttributeValue } from '@opentelemetry/api'
 import { logger } from '../logging/logger.js'
 import { CancelledError, CheckpointError } from '../errors.js'
 import { DefaultModelRetryStrategy } from '../retry/default-model-retry-strategy.js'
@@ -279,8 +278,7 @@ export type AgentConfig = {
   traceAttributes?: Record<string, AttributeValue>
   /**
    * OpenTelemetry baggage entries attached to the context for the whole invocation.
-   * Baggage propagates to downstream services via the W3C `baggage` header and is visible to span processors
-   * (see `setupBaggageProcessor` in `@strands-agents/sdk/telemetry` to stamp entries onto spans).
+   * Baggage propagates to downstream services via the W3C `baggage` header.
    */
   baggageAttributes?: Record<string, string>
   /**
@@ -482,7 +480,7 @@ export class Agent implements LocalAgent, InvokableAgent {
   /**
    * OpenTelemetry baggage entries attached to the context for every invocation.
    */
-  public readonly baggageAttributes: Record<string, string>
+  public readonly baggageAttributes: Readonly<Record<string, string>>
 
   private readonly _sandbox: Sandbox | false | undefined
 
@@ -1196,22 +1194,31 @@ export class Agent implements LocalAgent, InvokableAgent {
     args: InvokeArgs,
     options?: InvokeOptions
   ): AsyncGenerator<AgentStreamEvent, AgentResult, undefined> {
-    if (Object.keys(this.baggageAttributes).length === 0) return yield* this._streamInvocation(args, options)
-    // Baggage is current for span start (processors see it) and the whole invocation.
-    const baggageCtx = this._createBaggageContext()
-    return yield* runInContext(baggageCtx, this._streamInvocation(args, options))
+    return yield* this._withBaggage(this._streamInvocation(args, options))
   }
 
   /**
-   * Builds a context carrying {@link Agent.baggageAttributes} on top of the active context's baggage.
+   * Drives `invocation` so every step runs with {@link Agent.baggageAttributes} merged into the active baggage.
    */
-  private _createBaggageContext(): Context {
+  private async *_withBaggage<T, R>(invocation: AsyncGenerator<T, R, undefined>): AsyncGenerator<T, R, undefined> {
+    if (Object.keys(this.baggageAttributes).length === 0) return yield* invocation
+
     const active = otelContext.active()
     let baggage = propagation.getBaggage(active) ?? propagation.createBaggage()
     for (const [key, value] of Object.entries(this.baggageAttributes)) {
       baggage = baggage.setEntry(key, { value })
     }
-    return propagation.setBaggage(active, baggage)
+    const baggageCtx = propagation.setBaggage(active, baggage)
+
+    // Async generators resume in the caller's context, so every step must re-enter the baggage context.
+    return yield* {
+      [Symbol.asyncIterator](): AsyncGenerator<T, R, undefined> {
+        return this as AsyncGenerator<T, R, undefined>
+      },
+      next: (...args: [] | [undefined]) => otelContext.with(baggageCtx, () => invocation.next(...args)),
+      throw: (error: unknown) => otelContext.with(baggageCtx, () => invocation.throw(error)),
+      return: (value: R | PromiseLike<R>) => otelContext.with(baggageCtx, () => invocation.return(value)),
+    } as AsyncGenerator<T, R, undefined>
   }
 
   private async *_streamInvocation(

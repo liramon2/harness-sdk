@@ -28,7 +28,7 @@ import { Agent } from '@strands-agents/sdk'
 // --8<-- [end:baggage_propagation_imports]
 
 // --8<-- [start:baggage_span_processor_imports]
-import { setupBaggageProcessor, setupTracer } from '@strands-agents/sdk/telemetry'
+import { setupTracer } from '@strands-agents/sdk/telemetry'
 // --8<-- [end:baggage_span_processor_imports]
 
 // --8<-- [start:configuring_exporters_imports]

@@ -8,6 +8,7 @@ import { MockMessageModel } from '../../__fixtures__/mock-message-model.js'
 import { createMockTool } from '../../__fixtures__/tool-helpers.js'
 import type { Tool } from '../../tools/tool.js'
 import { ToolResultBlock } from '../../types/messages.js'
+import { AfterInvocationEvent } from '../../hooks/index.js'
 
 const exporter = new InMemorySpanExporter()
 const contextManager = new AsyncLocalStorageContextManager()
@@ -114,5 +115,24 @@ describe('Agent baggageAttributes', () => {
     await outer.invoke('Hi')
 
     expect(seen).toStrictEqual(['outer-corp', 'inner-corp', 'outer-corp'])
+  })
+
+  it.each([
+    ['consumer throws', (stream: AsyncGenerator) => stream.throw(new Error('boom')).catch(() => {})],
+    ['consumer breaks early', (stream: AsyncGenerator) => stream.return(undefined)],
+  ])('keeps baggage current for invocation cleanup when the %s', async (_, stop) => {
+    let seen: string | undefined
+    const agent = toolAgent(
+      createMockTool('probe', () => {}),
+      { 'tenant.id': 'acme' }
+    )
+    agent.addHook(AfterInvocationEvent, () => void (seen = tenant()))
+
+    // Stop inside the model call so the invocation's cleanup (and AfterInvocationEvent) runs.
+    const stream = agent.stream('Hi')
+    while ((await stream.next()).value?.type !== 'beforeModelCallEvent');
+    await stop(stream)
+
+    expect(seen).toBe('acme')
   })
 })

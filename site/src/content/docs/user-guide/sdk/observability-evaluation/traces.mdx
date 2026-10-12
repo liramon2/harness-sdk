@@ -430,7 +430,7 @@ agent = Agent(
 </Tab>
 </Tabs>
 
-If you also want baggage recorded on spans, call `setup_baggage_processor()` / `setupBaggageProcessor()`. Pass a predicate (or a sequence of predicates) that takes a baggage key and returns `True` to record only matching entries.
+If you also want baggage recorded on spans, call `setup_baggage_processor()` in Python or pass `baggageProcessor` to `setupTracer()` in TypeScript. Pass a predicate (or a list of predicates) that takes a baggage key and returns true to record only matching entries.
 
 <Tabs>
 <Tab label="Python">
@@ -441,6 +441,8 @@ strands_telemetry = StrandsTelemetry()
 strands_telemetry.setup_otlp_exporter()
 strands_telemetry.setup_baggage_processor(lambda key: key in {"tenant.id", "env"})
 ```
+
+Requires the `strands-agents[otel]` extra.
 </Tab>
 
 <Tab label="TypeScript">
@@ -449,11 +451,13 @@ strands_telemetry.setup_baggage_processor(lambda key: key in {"tenant.id", "env"
 
 --8<-- "user-guide/sdk/observability-evaluation/traces.ts:baggage_span_processor"
 ```
+
+Requires `npm install @opentelemetry/baggage-span-processor`. `baggageProcessor` is ignored when you pass your own `provider`.
 </Tab>
 </Tabs>
 
 :::caution
-Without a predicate, `setup_baggage_processor()` stamps *every* baggage entry onto every span, including values extracted from inbound `baggage` request headers. It requires the `strands-agents[otel]` extra.
+Without a predicate (`setup_baggage_processor()` or `baggageProcessor: true`), *every* baggage entry is stamped onto every span, including values extracted from inbound `baggage` request headers.
 :::
 
 ### Custom Spans
