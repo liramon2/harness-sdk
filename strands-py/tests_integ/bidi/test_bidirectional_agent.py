@@ -13,11 +13,11 @@ import os
 import pytest
 
 from strands import tool
-from strands.experimental.bidi.agent import BidiAgent
-from strands.experimental.bidi.hooks import BidiResponseStopEvent
-from strands.experimental.bidi.models import GoogleGeminiLiveModel, OpenAIRealtimeModel
-from strands.experimental.bidi.types import BidiResponseStartEvent, BidiTranscriptBlockEvent
-from strands.experimental.bidi.types import BidiResponseStopEvent as BidiResponseStopStreamEvent
+from strands.bidi.agent import BidiAgent
+from strands.bidi.hooks import BidiResponseStopEvent
+from strands.bidi.models import GoogleGeminiLiveModel, OpenAIRealtimeModel
+from strands.bidi.types import BidiResponseStartEvent, BidiTranscriptBlockEvent
+from strands.bidi.types import BidiResponseStopEvent as BidiResponseStopStreamEvent
 from strands.types._events import ToolResultEvent
 from strands.types.media import ImageBlock
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 def create_bedrock_nova_sonic_model(**kwargs):
     """Create a Nova Sonic model without importing its Python 3.12-only SDK during collection."""
-    from strands.experimental.bidi.models import BedrockNovaSonicModel
+    from strands.bidi.models import BedrockNovaSonicModel
 
     return BedrockNovaSonicModel(**kwargs)
 
@@ -65,7 +65,7 @@ def calculator(operation: str, x: float, y: float) -> float:
 PROVIDER_CONFIGS = {
     "bedrock_nova_sonic": {
         "model_factory": create_bedrock_nova_sonic_model,
-        "model_kwargs": {"model_id": "amazon.nova-2-sonic-v1:0", "region": "us-east-1"},
+        "model_kwargs": {"model_id": "amazon.nova-2-5-sonic", "region": "us-east-1"},
         "silence_duration": 2.5,  # Nova Sonic needs 2+ seconds of silence
         "env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
         "skip_reason": "AWS credentials not available",

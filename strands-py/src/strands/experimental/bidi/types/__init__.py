@@ -1,19 +1,13 @@
-"""Type definitions for bidirectional streaming."""
+"""Deprecated alias for :mod:`strands.bidi.types`."""
 
-from .agent import BidiAgentInput
-from .content import (
-    BidiContentBlock,
-    BidiContentBlockData,
-    BidiContentDelta,
-    BidiContentDeltaData,
-    BidiContentMetadata,
-    BidiMessage,
-    BidiUserContentBlock,
-    BidiUserContentBlockData,
-)
-from .events import (
+from typing import Any
+
+from strands.bidi import types as _real
+from strands.bidi.types import (
     AudioChannel,
+    AudioDelta,
     AudioFormat,
+    BidiAgentInput,
     BidiAudioDeltaEvent,
     BidiAudioStartEvent,
     BidiAudioStopEvent,
@@ -22,6 +16,12 @@ from .events import (
     BidiConnectionStartEvent,
     BidiConnectionStopEvent,
     BidiConnectionWarningEvent,
+    BidiContentBlock,
+    BidiContentBlockData,
+    BidiContentDelta,
+    BidiContentDeltaData,
+    BidiContentMetadata,
+    BidiMessage,
     BidiOutputEvent,
     BidiReasoningBlockEvent,
     BidiReasoningDeltaEvent,
@@ -39,11 +39,13 @@ from .events import (
     BidiTranscriptStartEvent,
     BidiTranscriptStopEvent,
     BidiUsageEvent,
-    ModalityUsage,
+    BidiUserContentBlock,
+    BidiUserContentBlockData,
+    InputStream,
+    OutputStream,
     Role,
+    TokenDetails,
 )
-from .io import InputStream, OutputStream
-from .media import AudioDelta
 
 __all__ = [
     "AudioChannel",
@@ -84,7 +86,12 @@ __all__ = [
     "BidiUserContentBlock",
     "BidiUserContentBlockData",
     "InputStream",
-    "ModalityUsage",
     "OutputStream",
     "Role",
+    "TokenDetails",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Forward attribute access to :mod:`strands.bidi.types`."""
+    return getattr(_real, name)
