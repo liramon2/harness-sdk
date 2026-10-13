@@ -10,7 +10,7 @@ sourceLinks:
   - path: strands-ts/src/tools/tool-factory.ts
 ---
 
-Turn a function you write into a tool the agent can call. Strands gives you a few ways to define one, and the Python and TypeScript forms differ slightly.
+Turn a function you write into a tool the agent can call. Strands gives you a few ways to define one.
 
 <Tabs>
 <Tab label="Python">
@@ -29,7 +29,7 @@ TypeScript supports two main approaches:
 
 * **tool() function with [Zod](https://zod.dev/) or JSON schemas**: Create tools using the `tool()` function with either Zod schemas for type-safe validated input, or plain JSON Schema objects for schema-only definitions without runtime validation.
 
-* **Class-based tools extending FunctionTool**: Create tools within classes to maintain shared state and resources.
+* **Class-based tools extending [`FunctionTool`](@api/typescript/FunctionTool)**: Create tools within classes to maintain shared state and resources.
 </Tab>
 </Tabs>
 
@@ -329,9 +329,9 @@ To use a different parameter name for `ToolContext`, pass that name as the `cont
 ```python
 from strands import tool, Agent, ToolContext
 
-@tool(context="context")
-def get_self_name(context: ToolContext) -> str:
-    return f"The agent name is {context.agent.name}"
+@tool(context="run_info")
+def get_self_name(run_info: ToolContext) -> str:
+    return f"The agent name is {run_info.agent.name}"
 
 agent = Agent(tools=[get_self_name], name="Best agent")
 
@@ -537,7 +537,10 @@ Create tools within a class and store them as properties. The tools access the c
 </Tab>
 </Tabs>
 
-## Module Based Tools (Python only)
+<Tabs>
+<Tab label="Python">
+
+## Module Based Tools
 
 An alternative approach is to define a tool as a Python module with a specific structure. This enables creating tools that don't depend on the SDK directly.
 
@@ -646,6 +649,10 @@ async def call_api(tool, **kwargs):
         "content": [{"text": result}],
     }
 ```
+</Tab>
+<Tab label="TypeScript">
+</Tab>
+</Tabs>
 
 ## Write effective tool descriptions
 
