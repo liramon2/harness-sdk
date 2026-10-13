@@ -10,12 +10,9 @@
  */
 
 import { InterruptResponseContent, type InterruptResponseContentData, type InterruptParams } from './types/interrupt.js'
-import { deepCopy, type JSONValue } from './types/json.js'
+import type { JSONValue } from './types/json.js'
 import type { LocalAgent } from './types/agent.js'
 import { Message, ToolResultBlock, type MessageData, type ToolResultBlockData } from './types/messages.js'
-import type { Snapshot } from './types/snapshot.js'
-import type { Agent } from './agent/agent.js'
-import { logger } from './logging/logger.js'
 
 /**
  * Origin of an interrupt:
@@ -390,134 +387,6 @@ export class InterruptState implements InterruptStateData {
     }
 
     return state
-  }
-}
-
-/**
- * Persists a nested agent's interrupted turn in its parent's interrupt state, scoped to one tool call.
- *
- * @internal
- */
-export class NestedInterruptState {
-  /** Prefix that scopes nested interrupt ids to this tool call on the parent. */
-  readonly prefix: string
-
-  /**
-   * @param state - The parent's interrupt state
-   * @param key - Key in `state.context` the interrupted turns are stored under
-   * @param namespace - Tool-specific id namespace, e.g. `subagent`
-   * @param toolUseId - Id of the tool call that runs the nested agent
-   */
-  constructor(
-    private readonly _state: InterruptState,
-    private readonly _key: string,
-    namespace: string,
-    private readonly _toolUseId: string
-  ) {
-    this.prefix = `${namespace}:${encodeURIComponent(_toolUseId)}:`
-  }
-
-  /** Whether the parent is holding an interrupt raised by this tool call. */
-  isResuming(): boolean {
-    return this._state.activated && Object.keys(this._state.interrupts).some((id) => id.startsWith(this.prefix))
-  }
-
-  /**
-   * Store the agent's interrupted turn and register its interrupts on the parent.
-   * Registered here because the concurrent executor keeps only one InterruptError per batch.
-   *
-   * @param agent - The interrupted nested agent
-   * @param interrupts - The interrupts the agent stopped on
-   * @returns The parent-scoped interrupts to throw
-   */
-  store(agent: Agent, interrupts: Interrupt[]): Interrupt[] {
-    const turns = (this._state.context[this._key] ??= {}) as Record<string, JSONValue>
-    turns[this._toolUseId] = deepCopy(agent.takeSnapshot({ preset: 'session' }))
-    return interrupts.map((interrupt) =>
-      this._state.registerInterrupt(
-        new Interrupt({
-          id: `${this.prefix}${interrupt.id}`,
-          name: interrupt.name,
-          ...(interrupt.reason !== undefined && { reason: interrupt.reason }),
-          source: 'tool',
-        })
-      )
-    )
-  }
-
-  /**
-   * The responses supplied on this resume for this tool call, mapped back to the nested agent's ids.
-   *
-   * @returns The nested agent's interrupt responses
-   * @throws InterruptError with this call's unanswered interrupts if none were answered
-   */
-  responses(): InterruptResponseContent[] {
-    const responses = (this._state.resumeResponses ?? [])
-      .filter((r) => r.interruptResponse.interruptId.startsWith(this.prefix))
-      .map(
-        (r) =>
-          new InterruptResponseContent({
-            interruptId: r.interruptResponse.interruptId.slice(this.prefix.length),
-            response: r.interruptResponse.response,
-          })
-      )
-    if (responses.length === 0) {
-      throw new InterruptError(
-        Object.values(this._state.interrupts).filter((i) => i.id.startsWith(this.prefix) && i.response === undefined)
-      )
-    }
-    return responses
-  }
-
-  /**
-   * Load the stored turn into `agent`, if there is one.
-   *
-   * @param agent - The nested agent to restore
-   * @throws Error if the stored turn cannot be loaded; it stays stored, see {@link NestedInterruptState.unanswer}
-   */
-  restore(agent: Agent): void {
-    const turn = this._turns()?.[this._toolUseId]
-    if (turn !== undefined) {
-      agent.loadSnapshot(turn as unknown as Snapshot)
-    }
-  }
-
-  /**
-   * Mark the stored turn's still-awaited interrupts unanswered, keeping the turn stored.
-   *
-   * @returns The interrupts to raise again; empty if there is no readable stored turn
-   */
-  unanswer(): Interrupt[] {
-    const turn = this._turns()?.[this._toolUseId]
-    const awaited = turn === undefined ? undefined : awaitedInterruptIds(turn)
-    if (awaited === undefined) {
-      logger.error(`tool_use_id=<${this._toolUseId}> | stored turn has no readable interrupt state to raise again`)
-      return []
-    }
-    const pending = Object.values(this._state.interrupts).filter(
-      (i) => i.id.startsWith(this.prefix) && awaited.includes(i.id.slice(this.prefix.length))
-    )
-    for (const interrupt of pending) delete interrupt.response
-    return pending
-  }
-
-  /** Drop the stored turn once the nested agent is done with it. */
-  clear(): void {
-    delete this._turns()?.[this._toolUseId]
-  }
-
-  private _turns(): Record<string, JSONValue> | undefined {
-    return this._state.context[this._key] as Record<string, JSONValue> | undefined
-  }
-}
-
-/** Ids of the interrupts a stored turn is waiting on, or undefined if its interrupt state is unreadable. */
-function awaitedInterruptIds(turn: JSONValue): string[] | undefined {
-  try {
-    const data = (turn as unknown as Snapshot).data.interrupts as unknown as InterruptStateData
-    return Object.keys(InterruptState.fromJSON(data).interrupts)
-  } catch {
-    return undefined
   }
 }
 

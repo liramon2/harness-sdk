@@ -9,7 +9,7 @@
 
 import type { Agent } from '../../agent/agent.js'
 import { findValidTrimPoint } from '../../conversation-manager/compression/context-compression.js'
-import { InterruptError, NestedInterruptState, type InterruptState } from '../../interrupt.js'
+import { Interrupt, InterruptError, type InterruptState } from '../../interrupt.js'
 import { logger } from '../../logging/logger.js'
 import {
   _defaultBuilder,
@@ -26,6 +26,7 @@ import { Tool, ToolStreamEvent } from '../../tools/tool.js'
 import type { ToolContext, ToolStreamGenerator } from '../../tools/tool.js'
 import type { ToolSpec } from '../../tools/types.js'
 import type { AgentResult, InvokeArgs } from '../../types/agent.js'
+import { InterruptResponseContent } from '../../types/interrupt.js'
 import type { JSONSchema } from '../../types/json.js'
 import { Message, TextBlock, ToolResultBlock } from '../../types/messages.js'
 import type { ContentBlock } from '../../types/messages.js'
@@ -34,9 +35,6 @@ import { DEFAULT_SUBAGENT_DESCRIPTION, DEFAULT_SUBAGENT_MAX_DEPTH, GENERALIST } 
 const CONTEXT_MODES: readonly string[] = ['none', 'all', 'no_tools']
 
 const DEPTH_STATE_KEY = 'strands.subagent_depth'
-
-/** Key in the parent's interrupt context holding interrupted child turns, keyed by tool use id. */
-const INTERRUPTED_TURNS_KEY = 'subagentInterruptedTurns'
 
 const FORK_PREAMBLE =
   "The conversation so far is the parent agent's. You are the subagent it delegated to at this " +
@@ -55,11 +53,7 @@ const SENTINEL = /<(\/?)parent_context>/g
 
 /** Options for {@link makeSubagent}. */
 export interface MakeSubagentOptions {
-  /**
-   * Turns a resolved spec into a child agent. Defaults to a builder that inherits from the parent.
-   * Also rebuilds the child on resume, restoring only its messages and state, so a different agent
-   * can drop an approval gate.
-   */
+  /** Turns a resolved spec into a child agent. Defaults to a builder that inherits from the parent. */
   builder?: AgentBuilder
   /** Named roles the model selects via `agent_type`. @defaultValue `{ generalist: GENERALIST }` */
   presets?: Record<string, Preset>
@@ -287,7 +281,8 @@ interface SubagentToolConfig {
 /**
  * Streams a fresh per-call child and propagates its interrupts to the parent for resume.
  *
- * An interrupted child's turn is stored on the parent, so it resumes after rehydration.
+ * If the parent never answers the interrupt, the child agent remains referenced here for the
+ * lifetime of this tool instance.
  *
  * @internal
  */
@@ -300,6 +295,8 @@ class SubagentTool extends Tool {
   private readonly _context: Fixed | Choice
   private readonly _builder: AgentBuilder | undefined
   private readonly _maxDepth: number
+  /** Children awaiting a resume, keyed by the tool-use id that interrupted. */
+  private readonly _pending = new Map<string, Agent>()
 
   constructor(config: SubagentToolConfig) {
     super()
@@ -321,11 +318,12 @@ class SubagentTool extends Tool {
       unknown
     >
     const parent = toolContext.agent as unknown as Agent | undefined
+    // Child interrupt ids are namespaced per tool call, since two children can raise the same id.
+    const prefix = `subagent:${encodeURIComponent(toolUseId)}:`
     const parentState = (parent as unknown as { _interruptState?: InterruptState } | undefined)?._interruptState
-    const state = parentState && new NestedInterruptState(parentState, INTERRUPTED_TURNS_KEY, 'subagent', toolUseId)
 
     try {
-      const prepared = this._prepareChild(toolUseId, raw, parent, state)
+      const prepared = this._prepareChild(toolUseId, raw, parent, parentState, prefix)
       if (typeof prepared === 'string') {
         return this._errorResult(toolUseId, prepared)
       }
@@ -343,12 +341,12 @@ class SubagentTool extends Tool {
         next = await gen.next()
       }
 
-      return this._finalizeResult(toolUseId, child, next.value as AgentResult | undefined, state)
+      return this._finalizeResult(toolUseId, child, next.value as AgentResult | undefined, parentState, prefix)
     } catch (error) {
       if (error instanceof InterruptError) {
         throw error
       }
-      state?.clear()
+      this._pending.delete(toolUseId)
       const message = error instanceof Error ? error.message : String(error)
       logger.warn(`tool_name=<${this.name}>, tool_use_id=<${toolUseId}>, error=<${message}> | subagent failed`)
       return this._errorResult(toolUseId, `Subagent error: ${message}`)
@@ -365,10 +363,13 @@ class SubagentTool extends Tool {
     toolUseId: string,
     raw: Record<string, unknown>,
     parent: Agent | undefined,
-    state: NestedInterruptState | undefined
+    parentState: InterruptState | undefined,
+    prefix: string
   ): { child: Agent; prompt: InvokeArgs } | string {
-    if (state?.isResuming()) {
-      return this._prepareResume(toolUseId, raw, parent, state)
+    const resuming =
+      parentState?.activated === true && Object.keys(parentState.interrupts).some((id) => id.startsWith(prefix))
+    if (resuming) {
+      return this._prepareResume(toolUseId, parentState, prefix)
     }
 
     const storedDepth = parent?.appState.get(DEPTH_STATE_KEY)
@@ -388,7 +389,8 @@ class SubagentTool extends Tool {
     if (spec.instructions !== undefined && typeof spec.instructions !== 'string') {
       return "Parameter 'instructions' must be a string."
     }
-    const child = this._build(spec, parent)
+    const build = this._builder ?? _defaultBuilder(parent as Agent)
+    const child = build(spec)
     child.appState.set(DEPTH_STATE_KEY, depth - 1)
     const { mode, lastMessages } = this._resolveContext(raw)
 
@@ -414,41 +416,42 @@ class SubagentTool extends Tool {
   }
 
   /**
-   * Rebuilds the interrupted child from the same tool input and restores its stored turn.
+   * Prepares the interrupted child to resume with the parent's answers to its interrupts.
    *
-   * @returns The child and its interrupt responses, or an error message if its turn is not available.
-   * @throws InterruptError if none of this child's interrupts were answered, or it cannot be rebuilt or restored.
+   * @returns The child and its interrupt responses, or an error message if the child is gone.
+   * @throws InterruptError if none of this child's interrupts were answered.
    */
   private _prepareResume(
     toolUseId: string,
-    raw: Record<string, unknown>,
-    parent: Agent | undefined,
-    state: NestedInterruptState
+    parentState: InterruptState,
+    prefix: string
   ): { child: Agent; prompt: InvokeArgs } | string {
-    const prompt = state.responses()
-    const spec = this._resolve(raw)
-    try {
-      const child = this._build(spec, parent)
-      state.restore(child)
-      if (child._interruptState.activated) return { child, prompt }
-    } catch (error) {
-      logger.warn(
-        `tool_name=<${this.name}>, tool_use_id=<${toolUseId}>, error=<${String(error)}> | failed to resume interrupted subagent`
-      )
-      // Keep the turn so the answer can be applied on a later attempt.
-      const pending = state.unanswer()
-      if (pending.length > 0) throw new InterruptError(pending)
-    }
-    state.clear()
-    logger.warn(`tool_name=<${this.name}>, tool_use_id=<${toolUseId}> | interrupted subagent is not available`)
-    return (
-      'Subagent did NOT run and the response was NOT applied: its interrupted turn is not available. ' +
-      'Do not report the delegated task as completed; if it is still needed, delegate it again.'
+    // Only the responses supplied on this resume; earlier rounds' answers were already applied.
+    const answered = (parentState.resumeResponses ?? []).filter((r) =>
+      r.interruptResponse.interruptId.startsWith(prefix)
     )
-  }
+    if (answered.length === 0) {
+      throw new InterruptError(Object.values(parentState.interrupts).filter((i) => i.id.startsWith(prefix)))
+    }
 
-  private _build(spec: AgentSpec, parent: Agent | undefined): Agent {
-    return (this._builder ?? _defaultBuilder(parent as Agent))(spec)
+    const child = this._pending.get(toolUseId)
+    if (!child?._interruptState.activated) {
+      this._pending.delete(toolUseId)
+      logger.warn(`tool_name=<${this.name}>, tool_use_id=<${toolUseId}> | interrupted subagent is not available`)
+      return (
+        'Subagent did NOT run and the response was NOT applied: its interrupted turn is not available. ' +
+        'Do not report the delegated task as completed.'
+      )
+    }
+
+    const prompt = answered.map(
+      (r) =>
+        new InterruptResponseContent({
+          interruptId: r.interruptResponse.interruptId.slice(prefix.length),
+          response: r.interruptResponse.response,
+        })
+    )
+    return { child, prompt }
   }
 
   /**
@@ -461,15 +464,33 @@ class SubagentTool extends Tool {
     toolUseId: string,
     child: Agent,
     result: AgentResult | undefined,
-    state: NestedInterruptState | undefined
+    parentState: InterruptState | undefined,
+    prefix: string
   ): ToolResultBlock {
-    if (result?.stopReason === 'interrupt' && result.interrupts?.length) {
-      throw new InterruptError(state ? state.store(child, result.interrupts) : result.interrupts)
-    }
-    state?.clear()
     if (result === undefined) {
+      this._pending.delete(toolUseId)
       return this._errorResult(toolUseId, 'Subagent produced no result.')
     }
+    if (result.stopReason === 'interrupt' && result.interrupts?.length) {
+      this._pending.set(toolUseId, child)
+      if (!parentState) {
+        throw new InterruptError(result.interrupts)
+      }
+      // Registered here, not only when the orchestrator catches the error: the concurrent executor keeps
+      // one InterruptError per batch, so a second interrupting subagent would otherwise be dropped.
+      const raised = result.interrupts.map((interrupt) =>
+        parentState.registerInterrupt(
+          new Interrupt({
+            id: `${prefix}${interrupt.id}`,
+            name: interrupt.name,
+            ...(interrupt.reason !== undefined && { reason: interrupt.reason }),
+            source: 'tool',
+          })
+        )
+      )
+      throw new InterruptError(raised)
+    }
+    this._pending.delete(toolUseId)
     if (result.stopReason === 'cancelled') {
       return this._errorResult(toolUseId, 'Subagent was cancelled.')
     }

@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GENERALIST, makeSubagent, subagent } from '../index.js'
 import { Agent } from '../../../agent/agent.js'
 import { MockMessageModel } from '../../../__fixtures__/mock-message-model.js'
-import { MockSnapshotStorage } from '../../../__fixtures__/mock-storage-provider.js'
 import { createMockTool } from '../../../__fixtures__/tool-helpers.js'
 import { textMessage } from '../../../__fixtures__/agent-helpers.js'
 import { collectGenerator } from '../../../__fixtures__/model-test-helpers.js'
@@ -10,7 +9,6 @@ import { Interrupt, InterruptError, InterruptState } from '../../../interrupt.js
 import { logger } from '../../../logging/logger.js'
 import { Choice, Fixed, Inherit, Option, Preset } from '../../../multiagent/spec.js'
 import type { AgentSpec } from '../../../multiagent/spec.js'
-import { SessionManager } from '../../../session/session-manager.js'
 import { StateStore } from '../../../state-store.js'
 import type { Tool, ToolContext } from '../../../tools/tool.js'
 import { AgentResult } from '../../../types/agent.js'
@@ -46,7 +44,6 @@ class FakeChild {
   readonly _interruptState = { activated: false }
   readonly prompts: InvokeArgs[] = []
   readonly calls: { invocationState: InvocationState; cancelSignal: AbortSignal }[] = []
-  readonly loaded: JSONValue[] = []
   private readonly _results: (AgentResult | undefined)[]
 
   constructor(...results: (AgentResult | undefined)[]) {
@@ -61,15 +58,6 @@ class FakeChild {
     this.calls.push(options)
     yield { type: 'modelStreamUpdateEvent' }
     return this._results.shift()
-  }
-
-  takeSnapshot(): JSONValue {
-    return { data: { prompts: this.prompts.length } }
-  }
-
-  loadSnapshot(snapshot: JSONValue): void {
-    this.loaded.push(snapshot)
-    this._interruptState.activated = true
   }
 
   asAgent(): Agent {
@@ -530,7 +518,7 @@ describe('subagent tool', () => {
   })
 
   describe('interrupts', () => {
-    it('namespaces child interrupts on the parent and resumes a rebuilt child from the stored turn', async () => {
+    it('namespaces child interrupts on the parent and resumes the same child', async () => {
       const childInterrupt = new Interrupt({ id: 'i1', name: 'confirm', reason: 'ok?' })
       const child = new FakeChild(fakeResult('', 'interrupt', [childInterrupt]), fakeResult('resumed'))
       const { builder, specs } = capturingBuilder(child)
@@ -544,19 +532,17 @@ describe('subagent tool', () => {
         { id: 'subagent:t1:i1', name: 'confirm', reason: 'ok?', source: 'tool' },
       ])
       expect(Object.keys(parent._interruptState.interrupts)).toEqual(['subagent:t1:i1'])
-      expect(parent._interruptState.context).toEqual({ subagentInterruptedTurns: { t1: { data: { prompts: 1 } } } })
 
-      // The parent resumes with an answer; the rebuilt child loads the turn and receives it under its own id.
+      // The parent resumes with an answer; the same child receives it under its own id.
       parent._interruptState.activate()
       parent._interruptState.resume([new InterruptResponseContent({ interruptId: 'subagent:t1:i1', response: 'yes' })])
+      child._interruptState.activated = true
 
       const { result } = await run(tool, { task: 'x' }, { agent: parent })
 
       expect(resultText(result)).toBe('resumed')
-      expect(child.loaded).toEqual([{ data: { prompts: 1 } }])
       expect(child.prompts[1]).toEqual([new InterruptResponseContent({ interruptId: 'i1', response: 'yes' })])
-      expect(specs).toHaveLength(2)
-      expect(parent._interruptState.context).toEqual({ subagentInterruptedTurns: {} })
+      expect(specs).toHaveLength(1)
     })
 
     it('raises the interrupts again when none were answered', async () => {
@@ -576,21 +562,19 @@ describe('subagent tool', () => {
       expect((error as InterruptError).interrupts.map((interrupt) => interrupt.id)).toEqual(['subagent:t1:i1'])
     })
 
-    it('returns an error when the interrupted turn is not stored', async () => {
+    it('returns an error when the interrupted child is no longer available', async () => {
       vi.spyOn(logger, 'warn').mockImplementation(() => {})
       const parent = parentAgent()
       parent._interruptState.registerInterrupt(new Interrupt({ id: 'subagent:t1:i1', name: 'confirm' }))
       parent._interruptState.activate()
       parent._interruptState.resume([new InterruptResponseContent({ interruptId: 'subagent:t1:i1', response: 'yes' })])
+      const { builder, specs } = capturingBuilder()
 
-      const { result } = await run(
-        makeSubagent({ builder: capturingBuilder().builder }),
-        { task: 'x' },
-        { agent: parent }
-      )
+      const { result } = await run(makeSubagent({ builder }), { task: 'x' }, { agent: parent })
 
       expect(result.status).toBe('error')
       expect(resultText(result)).toMatch(/did NOT run/)
+      expect(specs).toHaveLength(0)
     })
 
     it('rethrows child interrupts as-is when the parent has no interrupt state', async () => {
@@ -667,116 +651,6 @@ describe('subagent tool', () => {
 
       expect(result.toString()).toBe('parent done')
       expect(seen).toEqual(['A', 'B'])
-    })
-
-    /** A parent that delegates a confirming task, optionally rebuilt mid-interrupt from a shared session. */
-    function confirmingParent(storage: MockSnapshotStorage, rebuilt = false) {
-      let confirmed = 0
-      const confirmTool = createMockTool('confirmTool', (context) => {
-        context.interrupt({ name: 'confirm', reason: 'Please confirm' })
-        confirmed += 1
-        return 'ok'
-      })
-      // A rebuilt process has a fresh model, so it starts at the turn after the interrupted tool call.
-      const model = new MockMessageModel()
-      if (!rebuilt) {
-        model
-          .addTurn({ type: 'toolUseBlock', name: 'subagent', toolUseId: 't1', input: { task: 'confirm it' } })
-          .addTurn({ type: 'toolUseBlock', name: 'confirmTool', toolUseId: 'inner-1', input: {} })
-      }
-      model.addTurn({ type: 'textBlock', text: 'child report' }).addTurn({ type: 'textBlock', text: 'parent done' })
-      const parent = new Agent({
-        model,
-        tools: [subagent, confirmTool],
-        printer: false,
-        sessionManager: new SessionManager({ sessionId: 's1', storage: { snapshot: storage } }),
-      })
-      return { parent, confirmedCount: () => confirmed }
-    }
-
-    const interruptId = 'subagent:t1:tool:inner-1:confirm'
-
-    it('resumes the child after the parent is rebuilt from its session', async () => {
-      // Round-trip through JSON so the stored turn must survive serialization.
-      const storage = new MockSnapshotStorage()
-      const save = storage.saveSnapshot.bind(storage)
-      storage.saveSnapshot = (params) => save({ ...params, snapshot: JSON.parse(JSON.stringify(params.snapshot)) })
-      const first = confirmingParent(storage)
-      expect((await first.parent.invoke('go')).stopReason).toBe('interrupt')
-
-      const second = confirmingParent(storage, true)
-      const result = await second.parent.invoke([new InterruptResponseContent({ interruptId, response: 'yes' })])
-
-      expect(result.toString()).toBe('parent done')
-      expect(second.confirmedCount()).toBe(1)
-      expect(first.confirmedCount()).toBe(0)
-      expect(second.parent.messages[2]!.content).toEqual([
-        new ToolResultBlock({ toolUseId: 't1', status: 'success', content: [new TextBlock('child report')] }),
-      ])
-    })
-
-    it('raises the interrupt again and keeps the turn when the stored turn cannot be loaded', async () => {
-      vi.spyOn(logger, 'error').mockImplementation(() => {})
-      const { parent } = confirmingParent(new MockSnapshotStorage())
-      await parent.invoke('go')
-      const turns = parent._interruptState.context['subagentInterruptedTurns'] as Record<string, JSONValue>
-      turns['t1'] = { data: { messages: 'not-a-list', interrupts: { interrupts: { 'tool:inner-1:confirm': {} } } } }
-
-      const result = await parent.invoke([new InterruptResponseContent({ interruptId, response: 'yes' })])
-
-      expect(result.stopReason).toBe('interrupt')
-      expect(result.interrupts).toMatchObject([{ id: interruptId }])
-      expect(Object.keys(turns)).toEqual(['t1'])
-    })
-
-    it('raises the interrupt again and keeps the turn when the builder fails on resume', async () => {
-      vi.spyOn(logger, 'warn').mockImplementation(() => {})
-      const confirmTool = createMockTool('confirmTool', (context) => {
-        context.interrupt({ name: 'confirm', reason: 'Please confirm' })
-        return 'ok'
-      })
-      let fail = false
-      const tool = makeSubagent({
-        builder: () => {
-          if (fail) throw new Error('mcp down')
-          const model = new MockMessageModel().addTurn({
-            type: 'toolUseBlock',
-            name: 'confirmTool',
-            toolUseId: 'inner-1',
-            input: {},
-          })
-          return new Agent({ model, tools: [confirmTool], printer: false })
-        },
-      })
-      const model = new MockMessageModel()
-        .addTurn({ type: 'toolUseBlock', name: 'subagent', toolUseId: 't1', input: { task: 'confirm it' } })
-        .addTurn({ type: 'textBlock', text: 'parent done' })
-      const parent = new Agent({ model, tools: [tool], printer: false })
-      await parent.invoke('go')
-      fail = true
-
-      const result = await parent.invoke([new InterruptResponseContent({ interruptId, response: 'yes' })])
-
-      expect(result.stopReason).toBe('interrupt')
-      expect(result.interrupts).toMatchObject([{ id: interruptId }])
-      expect(result.interrupts![0]!.response).toBeUndefined()
-      expect(Object.keys(parent._interruptState.context['subagentInterruptedTurns'] as object)).toEqual(['t1'])
-    })
-
-    it('reports the turn as unavailable when an unloadable stored turn has no readable interrupt state', async () => {
-      const error = vi.spyOn(logger, 'error').mockImplementation(() => {})
-      vi.spyOn(logger, 'warn').mockImplementation(() => {})
-      const { parent } = confirmingParent(new MockSnapshotStorage())
-      await parent.invoke('go')
-      ;(parent._interruptState.context['subagentInterruptedTurns'] as Record<string, JSONValue>)['t1'] = {
-        data: { messages: 'not-a-list' },
-      }
-
-      const result = await parent.invoke([new InterruptResponseContent({ interruptId, response: 'yes' })])
-
-      expect(result.stopReason).toBe('endTurn')
-      expect(error).toHaveBeenCalledWith(expect.stringContaining('no readable interrupt state'))
-      expect(parent.messages[2]!.content[0]).toMatchObject({ status: 'error' })
     })
 
     it('delegates two levels deep from a parent with an auto context manager', async () => {
