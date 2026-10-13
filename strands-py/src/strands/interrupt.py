@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 _AGENT_STREAM_INTERRUPT_ID_PREFIX = "v1:middleware_agent_stream:"
 """Id prefix for interrupts scoped to a whole invocation pass rather than a single tool call."""
 
+_RESPONSES_KEY = "responses"
+"""Key in ``_InterruptState.context`` holding the responses supplied on the current resume."""
+
 
 @dataclass
 class Interrupt:
@@ -157,7 +160,7 @@ class _InterruptState:
 
             self.interrupts[interrupt_id].response = interrupt_response
 
-        self.context["responses"] = contents
+        self.context[_RESPONSES_KEY] = contents
         self._version += 1
 
     def set_pending_tool_results(self, completed_tool_results: list["ToolResult"]) -> None:
@@ -279,6 +282,7 @@ class _NestedInterruptState:
             The parent-scoped interrupts to raise.
         """
         turns = self._state.context.setdefault(self._key, {})
+        # The snapshot's interrupt state holds the agent's live context, so copy it to detach the stored turn.
         turns[self._tool_use_id] = copy.deepcopy(agent.take_snapshot(preset="session").to_dict())
         self._state._version += 1
         return [Interrupt(f"{self.prefix}{i.id}", i.name, i.reason) for i in interrupts]
@@ -292,7 +296,7 @@ class _NestedInterruptState:
                     "response": r["interruptResponse"]["response"],
                 }
             }
-            for r in self._state.context.get("responses") or []
+            for r in self._state.context.get(_RESPONSES_KEY) or []
             if r["interruptResponse"]["interruptId"].startswith(self.prefix)
         ]
 
@@ -305,6 +309,7 @@ class _NestedInterruptState:
         Raises:
             Exception: If the stored turn cannot be loaded; it stays stored, see :meth:`unanswer`.
         """
+        # Importing here to avoid circular import
         from .types._snapshot import Snapshot
 
         turn = (self._state.context.get(self._key) or {}).get(self._tool_use_id)
@@ -318,11 +323,10 @@ class _NestedInterruptState:
             The interrupts to raise again; empty if there is no readable stored turn.
         """
         turn = (self._state.context.get(self._key) or {}).get(self._tool_use_id) or {}
+        # Read the raw dict rather than Snapshot.from_dict, since the turn may be stored but fail validation.
         try:
-            awaited = turn["data"]["interrupt_state"]["interrupts"]
-        except (KeyError, TypeError):
-            awaited = None
-        if not isinstance(awaited, dict):
+            awaited = _InterruptState.from_dict(turn["data"]["interrupt_state"]).interrupts
+        except Exception:
             logger.error("tool_use_id=<%s> | stored turn has no readable interrupt state", self._tool_use_id)
             return []
         pending = [

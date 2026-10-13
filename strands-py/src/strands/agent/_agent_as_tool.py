@@ -260,7 +260,7 @@ class _AgentAsTool(AgentTool):
             if result.stop_reason == "interrupt" and result.interrupts:
                 interrupts = list(result.interrupts)
                 if nested is not None:
-                    interrupts = self._raise_interrupts(nested, tool_use_id, interrupts)
+                    interrupts = self._store_interrupted_turn(nested, tool_use_id, interrupts)
                 yield ToolInterruptEvent(tool_use, interrupts)
                 return
 
@@ -353,24 +353,28 @@ class _AgentAsTool(AgentTool):
         self._agent.state = AgentState(self._initial_state.get())
         self._agent._interrupt_state = _InterruptState()
 
-    def _raise_interrupts(
+    def _store_interrupted_turn(
         self, nested: _NestedInterruptState, tool_use_id: str, interrupts: list[Interrupt]
     ) -> list[Interrupt]:
-        """Namespace the sub-agent's interrupts to this tool call, storing its turn if it is ephemeral.
+        """Store an ephemeral sub-agent's interrupted turn in the parent's interrupt state.
 
         A ``preserve_context=True`` sub-agent keeps its own state instead, and needs its own session
         manager for the interrupt to be resumable after a restart.
+
+        Returns:
+            The sub-agent's interrupts, namespaced to this tool call.
         """
-        if not self._preserve_context:
-            return nested.store(self._agent, interrupts)
-        if getattr(self._agent, "_session_manager", None) is None:
-            logger.warning(
-                "tool_name=<%s>, tool_use_id=<%s> | interrupted sub-agent has preserve_context=True and no "
-                "session manager, so its interrupt cannot be resumed after a restart",
-                self._tool_name,
-                tool_use_id,
-            )
-        return [Interrupt(f"{nested.prefix}{i.id}", i.name, i.reason) for i in interrupts]
+        if self._preserve_context:
+            if getattr(self._agent, "_session_manager", None) is None:
+                logger.warning(
+                    "tool_name=<%s>, tool_use_id=<%s> | interrupted sub-agent has preserve_context=True and no "
+                    "session manager, so its interrupt cannot be resumed after a restart",
+                    self._tool_name,
+                    tool_use_id,
+                )
+            return [Interrupt(f"{nested.prefix}{i.id}", i.name, i.reason) for i in interrupts]
+
+        return nested.store(self._agent, interrupts)
 
     def _resume_from_interrupt(
         self, nested: _NestedInterruptState, tool_use: ToolUse

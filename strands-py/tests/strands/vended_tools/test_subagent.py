@@ -10,7 +10,6 @@ from strands import ToolContext
 from strands.agent.agent import Agent
 from strands.agent.state import AgentState
 from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
-from strands.interrupt import _InterruptState
 from strands.multiagent.spec import Choice, Fixed, Inherit, Option, Preset
 from strands.session.file_session_manager import FileSessionManager
 from strands.vended_tools.subagent import make_subagent
@@ -452,9 +451,7 @@ def test_interrupt_resumes_after_parent_is_rebuilt(confirming_parent):
 def test_unloadable_turn_raises_the_interrupt_again_and_keeps_the_turn(confirming_parent):
     _, interrupted, executions = confirming_parent
     parent, interrupt_id = interrupted()
-    turns = parent._interrupt_state.context[_INTERRUPTED_TURNS_KEY]
-    child_interrupt_id = interrupt_id[len("v1:subagent:t1:") :]
-    turns["t1"] = {"data": {"messages": "not-a-list", "interrupt_state": {"interrupts": {child_interrupt_id: {}}}}}
+    parent._interrupt_state.context[_INTERRUPTED_TURNS_KEY]["t1"]["schema_version"] = "0.0"
 
     result = parent(_answer(interrupt_id))
 
@@ -539,11 +536,8 @@ async def test_child_exception_becomes_error_result():
     tool = make_subagent(
         builder=lambda spec: (_ for _ in ()).throw(RuntimeError("boom")), presets={"generalist": GENERALIST}
     )
-    parent_state = _InterruptState(context={_INTERRUPTED_TURNS_KEY: {"t1": {}}})
-    parent = SimpleNamespace(state=AgentState(), messages=[], _interrupt_state=parent_state)
-    result = _result(await _events(tool, {"task": "x"}, parent))
+    result = _result(await _events(tool, {"task": "x"}))
     assert result["status"] == "error" and "boom" in result["content"][0]["text"]
-    assert parent_state.context == {_INTERRUPTED_TURNS_KEY: {}}
 
 
 @pytest.mark.asyncio

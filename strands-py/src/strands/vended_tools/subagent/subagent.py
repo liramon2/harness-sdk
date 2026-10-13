@@ -14,6 +14,7 @@ import re
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from ...agent._agent_as_tool import _INTERRUPTED_TURNS_KEY
 from ...agent.conversation_manager.compression.context_compression import find_valid_trim_point
 from ...interrupt import _NestedInterruptState
 from ...multiagent.spec import (
@@ -43,8 +44,6 @@ if TYPE_CHECKING:
     from ... import Agent
 
 _DEPTH_STATE_KEY = "strands.subagent_depth"
-# Key in the parent's interrupt context holding interrupted child turns, keyed by tool use id.
-_INTERRUPTED_TURNS_KEY = "subagent_interrupted_turns"
 
 _FORK_PREAMBLE = (
     "The conversation so far is the parent agent's. You are the subagent it delegated to at this "
@@ -318,9 +317,9 @@ class _SubagentTool(AgentTool):
             if pending:
                 return ToolInterruptEvent(tool_use, pending)
         else:
+            state.clear()
             if child._interrupt_state.activated:
                 return child, state.responses()
-        state.clear()
         logger.warning(
             "tool_name=<%s>, tool_use_id=<%s> | interrupted subagent is not available",
             self._name,
@@ -340,8 +339,6 @@ class _SubagentTool(AgentTool):
             interrupts = list(result.interrupts)
             raised = interrupts if state is None else state.store(child, interrupts)
             return ToolInterruptEvent(tool_use, raised)
-        if state is not None:
-            state.clear()
         if result is None:
             return self._error_result(tool_use_id, "Subagent produced no result.")
         if result.stop_reason == "cancelled":
@@ -388,8 +385,6 @@ class _SubagentTool(AgentTool):
 
             yield self._finalize_result(tool_use, child, result, state)
         except Exception as exc:
-            if state is not None:
-                state.clear()
             logger.warning(
                 "tool_name=<%s>, tool_use_id=<%s> | subagent failed: %s",
                 self._name,
