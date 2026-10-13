@@ -10,14 +10,12 @@ import copy
 import logging
 import threading
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
 
 from typing_extensions import override
 
 from ..agent.state import AgentState
-from ..interrupt import Interrupt, _InterruptState
+from ..interrupt import Interrupt, _InterruptState, _NestedInterruptState
 from ..types._events import AgentAsToolStreamEvent, ToolInterruptEvent, ToolResultEvent
-from ..types._snapshot import Snapshot
 from ..types.content import Messages
 from ..types.exceptions import SnapshotException
 from ..types.interrupt import InterruptResponseContent
@@ -194,7 +192,11 @@ class _AgentAsTool(AgentTool):
         tool_use_id = tool_use["toolUseId"]
         parent = invocation_state.get("agent")
         # Sub-agent interrupt ids are namespaced per tool call, since two sub-agents can raise the same id.
-        prefix = f"v1:agent_as_tool:{quote(tool_use_id, safe='')}:"
+        nested = (
+            None
+            if parent is None
+            else _NestedInterruptState(parent._interrupt_state, _INTERRUPTED_TURNS_KEY, "v1:agent_as_tool", tool_use_id)
+        )
 
         # Serialize access to the underlying agent. _reset_agent_state() mutates
         # the agent before stream_async acquires its own lock, so a concurrent
@@ -215,8 +217,8 @@ class _AgentAsTool(AgentTool):
             return
 
         try:
-            if parent is not None and self._is_resuming(parent, prefix):
-                resumed = self._resume_from_interrupt(parent, tool_use, prefix)
+            if nested is not None and nested.is_resuming():
+                resumed = self._resume_from_interrupt(nested, tool_use)
                 if not isinstance(resumed, list):
                     yield resumed
                     return
@@ -257,9 +259,8 @@ class _AgentAsTool(AgentTool):
             # Propagate sub-agent interrupts to the parent agent.
             if result.stop_reason == "interrupt" and result.interrupts:
                 interrupts = list(result.interrupts)
-                if parent is not None:
-                    self._store_interrupted_turn(parent, tool_use_id)
-                    interrupts = [Interrupt(f"{prefix}{i.id}", i.name, i.reason) for i in interrupts]
+                if nested is not None:
+                    interrupts = self._raise_interrupts(nested, tool_use_id, interrupts)
                 yield ToolInterruptEvent(tool_use, interrupts)
                 return
 
@@ -352,32 +353,27 @@ class _AgentAsTool(AgentTool):
         self._agent.state = AgentState(self._initial_state.get())
         self._agent._interrupt_state = _InterruptState()
 
-    def _is_resuming(self, parent: Agent, prefix: str) -> bool:
-        """Whether the parent is holding an interrupt raised by this tool call."""
-        state = parent._interrupt_state
-        return state.activated and any(interrupt_id.startswith(prefix) for interrupt_id in state.interrupts)
-
-    def _store_interrupted_turn(self, parent: Agent, tool_use_id: str) -> None:
-        """Store an ephemeral sub-agent's interrupted turn in the parent's interrupt state.
+    def _raise_interrupts(
+        self, nested: _NestedInterruptState, tool_use_id: str, interrupts: list[Interrupt]
+    ) -> list[Interrupt]:
+        """Namespace the sub-agent's interrupts to this tool call, storing its turn if it is ephemeral.
 
         A ``preserve_context=True`` sub-agent keeps its own state instead, and needs its own session
         manager for the interrupt to be resumable after a restart.
         """
-        if self._preserve_context:
-            if getattr(self._agent, "_session_manager", None) is None:
-                logger.warning(
-                    "tool_name=<%s>, tool_use_id=<%s> | interrupted sub-agent has preserve_context=True and no "
-                    "session manager, so its interrupt cannot be resumed after a restart",
-                    self._tool_name,
-                    tool_use_id,
-                )
-            return
-
-        turns = parent._interrupt_state.context.setdefault(_INTERRUPTED_TURNS_KEY, {})
-        turns[tool_use_id] = copy.deepcopy(self._agent.take_snapshot(preset="session").to_dict())
+        if not self._preserve_context:
+            return nested.store(self._agent, interrupts)
+        if getattr(self._agent, "_session_manager", None) is None:
+            logger.warning(
+                "tool_name=<%s>, tool_use_id=<%s> | interrupted sub-agent has preserve_context=True and no "
+                "session manager, so its interrupt cannot be resumed after a restart",
+                self._tool_name,
+                tool_use_id,
+            )
+        return [Interrupt(f"{nested.prefix}{i.id}", i.name, i.reason) for i in interrupts]
 
     def _resume_from_interrupt(
-        self, parent: Agent, tool_use: ToolUse, prefix: str
+        self, nested: _NestedInterruptState, tool_use: ToolUse
     ) -> list[InterruptResponseContent] | ToolInterruptEvent | ToolResultEvent:
         """Restore the sub-agent's interrupted turn and map the parent's responses back to its interrupt ids.
 
@@ -385,36 +381,27 @@ class _AgentAsTool(AgentTool):
         raised again if the stored turn could not be loaded, or an error result if there is no turn.
         """
         tool_use_id = tool_use["toolUseId"]
-        turns = parent._interrupt_state.context.get(_INTERRUPTED_TURNS_KEY) or {}
-        turn = turns.get(tool_use_id)
-        if turn is not None:
-            try:
-                self._agent.load_snapshot(Snapshot.from_dict(turn))
-            except (SnapshotException, ValueError, KeyError, TypeError) as error:
-                logger.error(
-                    "tool_name=<%s>, tool_use_id=<%s> | failed to restore interrupted sub-agent turn: %s",
-                    self._tool_name,
-                    tool_use_id,
-                    error,
-                )
-                # Keep the turn and raise its interrupts again, so the response can be applied on a later attempt.
-                awaited = (turn.get("data") or {}).get("interrupt_state", {}).get("interrupts") or {}
-                pending = [
-                    interrupt
-                    for interrupt_id, interrupt in parent._interrupt_state.interrupts.items()
-                    if interrupt_id.startswith(prefix) and interrupt_id[len(prefix) :] in awaited
-                ]
-                if pending:
-                    return ToolInterruptEvent(tool_use, pending)
-            else:
-                del turns[tool_use_id]
+        try:
+            nested.restore(self._agent)
+        except (SnapshotException, ValueError, KeyError, TypeError) as error:
+            logger.error(
+                "tool_name=<%s>, tool_use_id=<%s> | failed to restore interrupted sub-agent turn: %s",
+                self._tool_name,
+                tool_use_id,
+                error,
+            )
+            # Keep the turn and raise its interrupts again, so the response can be applied on a later attempt.
+            pending = nested.unanswer()
+            if pending:
+                return ToolInterruptEvent(tool_use, pending)
+        else:
+            nested.clear()
         if not self._agent._interrupt_state.activated:
-            if turn is None:
-                logger.error(
-                    "tool_name=<%s>, tool_use_id=<%s> | cannot resume: the interrupted sub-agent turn is not available",
-                    self._tool_name,
-                    tool_use_id,
-                )
+            logger.error(
+                "tool_name=<%s>, tool_use_id=<%s> | cannot resume: the interrupted sub-agent turn is not available",
+                self._tool_name,
+                tool_use_id,
+            )
             return ToolResultEvent(
                 {
                     "toolUseId": tool_use_id,
@@ -432,16 +419,7 @@ class _AgentAsTool(AgentTool):
         logger.debug(
             "tool_name=<%s>, tool_use_id=<%s> | resuming sub-agent from interrupt", self._tool_name, tool_use_id
         )
-        return [
-            {
-                "interruptResponse": {
-                    "interruptId": response["interruptResponse"]["interruptId"][len(prefix) :],
-                    "response": response["interruptResponse"]["response"],
-                }
-            }
-            for response in parent._interrupt_state.context.get("responses") or []
-            if response["interruptResponse"]["interruptId"].startswith(prefix)
-        ]
+        return nested.responses()
 
     @override
     def get_display_properties(self) -> dict[str, str]:
