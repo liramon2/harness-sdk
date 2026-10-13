@@ -95,7 +95,7 @@ def test_presets_add_agent_type_parameter():
     tool = make_subagent(
         builder=lambda spec: None,
         presets={
-            "generalist": Preset(),
+            "generalist": GENERALIST,
             "reviewer": Preset(instructions="review", description="reviews diffs"),
         },
         default_preset="generalist",
@@ -140,11 +140,12 @@ async def test_run_builds_child_and_returns_output():
         captured["spec"] = spec
         return _FakeChild(_FakeResult("the answer"))
 
-    tool = make_subagent(builder=builder)
+    tool = make_subagent(builder=builder, presets={"generalist": GENERALIST})
     result = _result(await _events(tool, {"task": "do it"}))
     assert result["status"] == "success"
     assert result["content"][0]["text"] == "the answer"
-    assert (captured["spec"].name, captured["spec"].instructions) == ("subagent", GENERALIST.instructions)
+    assert captured["spec"].name == "subagent"
+    assert captured["spec"].instructions == GENERALIST.instructions
 
 
 @pytest.mark.asyncio
@@ -212,7 +213,10 @@ async def test_fixed_axis_ignores_model_value():
 
 @pytest.mark.asyncio
 async def test_off_schema_agent_type_rejected():
-    tool = make_subagent(builder=lambda spec: _FakeChild(_FakeResult()))
+    tool = make_subagent(
+        builder=lambda spec: _FakeChild(_FakeResult()),
+        presets={"generalist": GENERALIST},
+    )
     result = _result(await _events(tool, {"task": "x", "agent_type": "nope"}))
     assert result["status"] == "error"
 
@@ -376,7 +380,7 @@ async def test_interrupt_propagates_and_resumes():
     child = _FakeChild(first_result, _FakeResult("resumed"), activated=True)
 
     parent = SimpleNamespace(state=AgentState(), messages=[])
-    tool = make_subagent(builder=lambda spec: child)
+    tool = make_subagent(builder=lambda spec: child, presets={"generalist": GENERALIST})
 
     tool_use = {"toolUseId": "t1", "name": "subagent", "input": {"task": "x"}}
     events = [event async for event in tool.stream(tool_use, {"agent": parent})]
@@ -390,7 +394,9 @@ async def test_interrupt_propagates_and_resumes():
 
 @pytest.mark.asyncio
 async def test_child_exception_becomes_error_result():
-    tool = make_subagent(builder=lambda spec: (_ for _ in ()).throw(RuntimeError("boom")))
+    tool = make_subagent(
+        builder=lambda spec: (_ for _ in ()).throw(RuntimeError("boom")), presets={"generalist": GENERALIST}
+    )
     result = _result(await _events(tool, {"task": "x"}))
     assert result["status"] == "error" and "boom" in result["content"][0]["text"]
 
@@ -398,7 +404,7 @@ async def test_child_exception_becomes_error_result():
 @pytest.mark.asyncio
 async def test_cancelled_child_becomes_error_result():
     child = _FakeChild(_FakeResult(stop_reason="cancelled"))
-    tool = make_subagent(builder=lambda spec: child)
+    tool = make_subagent(builder=lambda spec: child, presets={"generalist": GENERALIST})
     result = _result(await _events(tool, {"task": "x"}))
     assert result["status"] == "error" and "cancelled" in result["content"][0]["text"].lower()
 
@@ -414,6 +420,7 @@ async def test_depth_tracking():
 
     tool = make_subagent(
         builder=builder,
+        presets={"generalist": GENERALIST},
         max_depth=3,
         name="delegate",
     )
@@ -436,7 +443,7 @@ async def test_invocation_state_is_copied():
     child = _FakeChild(_FakeResult())
     parent = SimpleNamespace(state=AgentState(), messages=[], cancel_signal=None)
     invocation_state = {"agent": parent, "scratch": 1}
-    tool = make_subagent(builder=lambda spec: child)
+    tool = make_subagent(builder=lambda spec: child, presets={"generalist": GENERALIST})
     tool_use = {"toolUseId": "t1", "name": "subagent", "input": {"task": "x"}}
     [event async for event in tool.stream(tool_use, invocation_state)]
     assert child.invocation_states[0] is not invocation_state
@@ -448,7 +455,7 @@ async def test_cancel_signal_prefers_tool_context():
     """_tool_context.cancel_signal wins; without it, falls back to the parent's."""
     child = _FakeChild(_FakeResult(), _FakeResult())
     parent = SimpleNamespace(state=AgentState(), messages=[], cancel_signal="parent-sig")
-    tool = make_subagent(builder=lambda spec: child)
+    tool = make_subagent(builder=lambda spec: child, presets={"generalist": GENERALIST})
     tool_use = {"toolUseId": "t1", "name": "subagent", "input": {"task": "x"}}
 
     # With _tool_context → uses its signal.
@@ -471,7 +478,7 @@ async def test_no_result_from_child_yields_error():
         async def stream_async(self, prompt, invocation_state=None, cancel_signal=None):
             yield {"data": "not a result"}
 
-    tool = make_subagent(builder=lambda spec: _EmptyChild())
+    tool = make_subagent(builder=lambda spec: _EmptyChild(), presets={"generalist": GENERALIST})
     result = _result(await _events(tool, {"task": "x"}))
     assert result["status"] == "error" and "no result" in result["content"][0]["text"].lower()
 
@@ -479,7 +486,7 @@ async def test_no_result_from_child_yields_error():
 @pytest.mark.asyncio
 async def test_missing_task_returns_error():
     """Empty or missing task should produce an error result."""
-    tool = make_subagent(builder=lambda spec: _FakeChild(_FakeResult()))
+    tool = make_subagent(builder=lambda spec: _FakeChild(_FakeResult()), presets={"generalist": GENERALIST})
     result = _result(await _events(tool, {}))
     assert result["status"] == "error"
     assert "task" in result["content"][0]["text"].lower()
