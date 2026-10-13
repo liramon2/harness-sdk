@@ -213,7 +213,10 @@ class TestMakeSwarm:
     def test_default_spec(self):
         agents = swarm.tool_spec["inputSchema"]["json"]["properties"]["agents"]
         assert agents["minItems"] == 1 and agents["maxItems"] == _DEFAULT_MAX_AGENTS
-        assert "first agent receives the task" in agents["description"]
+        assert (
+            "Defaults to the first agent"
+            in swarm.tool_spec["inputSchema"]["json"]["properties"]["entry_point"]["description"]
+        )
         assert swarm.tool_spec["inputSchema"]["json"] == _build_schema(
             presets={},
             default_preset=None,
@@ -282,16 +285,17 @@ class TestSwarmToolExecution:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "agents,match",
+        "agents,kw,match",
         [
-            ([], "Between 1 and 2"),
-            ([_spec("a"), _spec("b"), _spec("c")], "Between 1 and 2"),
-            ([{}], "non-empty 'name'"),
+            ([], {}, "Between 1 and 2"),
+            ([_spec("a"), _spec("b"), _spec("c")], {}, "Between 1 and 2"),
+            ([{}], {}, "non-empty 'name'"),
+            ([_spec("a", instructions="Do.")], {"entry_point": "z"}, "entry_point 'z'"),
         ],
     )
-    async def test_rejects_invalid_agents(self, agents, match):
+    async def test_rejects_invalid_agents(self, agents, kw, match):
         with pytest.raises(ValueError, match=match):
-            await _run(make_swarm(max_agents=2), task="t", agents=agents, tool_context=_ctx())
+            await _run(make_swarm(max_agents=2), task="t", agents=agents, tool_context=_ctx(), **kw)
 
     @pytest.mark.asyncio
     async def test_failed_status_raises(self):
@@ -334,9 +338,9 @@ class TestEndToEnd:
 
 class TestChildren:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("stored_depth,expected_depth", [(None, 2), (2, 1)])
-    async def test_builds_children(self, stored_depth, expected_depth):
-        """Children are built from resolved specs, get decremented depth, and lose handoff_to_agent."""
+    @pytest.mark.parametrize("stored_depth,expected_depth,entry_point", [(None, 2, None), (2, 1, "b")])
+    async def test_builds_children(self, stored_depth, expected_depth, entry_point):
+        """Children get resolved specs and decremented depth, lose handoff_to_agent, and honor entry_point."""
         specs, children = [], []
 
         def builder(spec):
@@ -351,10 +355,17 @@ class TestChildren:
         state = {} if stored_depth is None else {_DEPTH_STATE_KEY: stored_depth}
         custom = make_swarm(builder=builder, instructions=Fixed("Locked."), max_depth=3)
         with _patch() as cls:
-            await _run(custom, task="t", agents=[_spec("a"), _spec("b")], tool_context=_ctx(_mock_parent(state=state)))
+            await _run(
+                custom,
+                task="t",
+                agents=[_spec("a"), _spec("b")],
+                tool_context=_ctx(_mock_parent(state=state)),
+                entry_point=entry_point,
+            )
 
         assert [(s.name, s.instructions) for s in specs] == [("a", "Locked."), ("b", "Locked.")]
         assert cls.call_args[1]["nodes"] == children
+        assert cls.call_args[1].get("entry_point") is (children[1] if entry_point else None)
         for child in children:
             assert child.state.get(_DEPTH_STATE_KEY) == expected_depth
             assert "handoff_to_agent" not in child.tool_registry.registry

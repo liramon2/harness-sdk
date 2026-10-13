@@ -39,7 +39,7 @@ DEFAULT_SWARM_DESCRIPTION = (
     "Spin up a team of AI agents that solve a task together by handing off to one another. "
     "Each agent has its own name, system prompt, and tools (drawn from your own). "
     "Agents get their own handoff tool; your tools are otherwise passed through. "
-    "The first agent in `agents` is the entry point: it receives the "
+    "The `entry_point` agent (default: the first in `agents`) receives the "
     "task and starts the work. The run ends when an agent finishes without handing off. "
     "Returns each participating agent's final output, prefixed with its name. If the team "
     "does not complete (an agent fails, or a handoff, iteration, or time limit is hit), the "
@@ -155,6 +155,7 @@ def make_swarm(
         task: str,
         agents: list[Mapping[str, Any]],
         tool_context: ToolContext,
+        entry_point: str | None = None,
     ) -> AsyncGenerator[Any, None]:
         """Spins up a team of agents that collaborate via handoffs to solve a task.
 
@@ -162,6 +163,7 @@ def make_swarm(
             task: The objective for the agent team.
             agents: Agent specifications (see :func:`make_swarm`).
             tool_context: Injected by the framework. Not user-facing.
+            entry_point: Name of the agent that starts the swarm. Defaults to the first agent.
         """
         parent = tool_context.agent
 
@@ -183,15 +185,19 @@ def make_swarm(
         )
         if not 1 <= len(specs) <= max_agents:
             raise ValueError(f"Between 1 and {max_agents} agents required, got {len(specs)}")
-        child_agents = []
+        if entry_point is not None and entry_point not in {spec.name for spec in specs}:
+            raise ValueError(f"entry_point {entry_point!r} does not match any agent name")
+        child_agents = {}
         for spec in specs:
             child = build(spec)
             child.state.set(_DEPTH_STATE_KEY, depth - 1)
             for tool_name in _EXCLUDED_TOOLS:
                 child.tool_registry.registry.pop(tool_name, None)
-            child_agents.append(child)
+            child_agents[spec.name] = child
 
-        swarm_kwargs: dict[str, Any] = {"nodes": child_agents}
+        swarm_kwargs: dict[str, Any] = {"nodes": list(child_agents.values())}
+        if entry_point is not None:
+            swarm_kwargs["entry_point"] = child_agents[entry_point]
         if max_handoffs is not None:
             swarm_kwargs["max_handoffs"] = max_handoffs
         if max_iterations is not None:
@@ -260,9 +266,14 @@ def _build_schema(
         "required": ["task", "agents"],
         "properties": {
             "task": {"type": "string", "description": "The objective for the agent team."},
+            "entry_point": {
+                "type": "string",
+                "description": "Name of the agent that receives the task and starts the swarm. "
+                "Defaults to the first agent.",
+            },
             "agents": {
                 "type": "array",
-                "description": "Agent specifications. The first agent receives the task and starts the swarm.",
+                "description": "Agent specifications.",
                 "items": {
                     "type": "object",
                     "properties": {
