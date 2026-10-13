@@ -16,7 +16,7 @@ from strands.agent import AgentResult
 from strands.agent.state import AgentState
 from strands.experimental.tools import stop
 from strands.multiagent.base import NodeResult, Status
-from strands.multiagent.spec import Choice, Fixed, Inherit, Open, Preset
+from strands.multiagent.spec import Choice, Fixed, Inherit, Open, Preset, _append_presets
 from strands.multiagent.swarm import SwarmResult
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.tools.registry import ToolRegistry
@@ -27,9 +27,7 @@ from strands.vended_tools.swarm.swarm import (
     _DEFAULT_MAX_AGENTS,
     _DEPTH_STATE_KEY,
     DEFAULT_SWARM_DESCRIPTION,
-    _build_agent_item_schema,
-    _build_description,
-    _resolve_specs,
+    _build_schema,
 )
 from tests.fixtures.mocked_model_provider import MockedModelProvider
 
@@ -129,18 +127,20 @@ def _patch(result=None, events=()):
     return _Ctx()
 
 
-class TestBuildAgentItemSchema:
+def _item_schema(default_preset=None, **axes):
+    return _build_schema(max_agents=1, default_preset=default_preset, **axes)["properties"]["agents"]["items"]
+
+
+class TestBuildSchema:
     def test_visible_and_hidden_axes(self):
         # Open + no presets → instructions required.
-        schema = _build_agent_item_schema(
-            presets={}, instructions=Open(), tools=None, mcp_servers=Inherit(), model=None
-        )
+        schema = _item_schema(presets={}, instructions=Open(), tools=None, mcp_servers=Inherit(), model=None)
         assert schema["required"] == ["name", "instructions"]
         assert schema["additionalProperties"] is False
         assert schema["properties"]["instructions"]["type"] == "string"
 
         # Open + presets → instructions not required (preset provides a default).
-        with_presets = _build_agent_item_schema(
+        with_presets = _item_schema(
             presets={"w": Preset(description="W")},
             instructions=Open(),
             tools=None,
@@ -150,7 +150,7 @@ class TestBuildAgentItemSchema:
         assert with_presets["required"] == ["name"]
 
         # Fixed/Inherit → hidden.
-        hidden = _build_agent_item_schema(
+        hidden = _item_schema(
             presets={},
             instructions=Fixed("x"),
             tools=Inherit(),
@@ -161,7 +161,7 @@ class TestBuildAgentItemSchema:
 
     def test_choice_axes_and_presets(self):
         presets = {"alpha": Preset(description="First"), "beta": Preset(description="Second")}
-        schema = _build_agent_item_schema(
+        schema = _item_schema(
             presets=presets,
             instructions=Choice(["A", "B"]),
             tools=Choice(["calc", "fetch"], multiple=True),
@@ -177,53 +177,10 @@ class TestBuildAgentItemSchema:
         assert "- alpha: First" in agent_type["description"]
 
     def test_presets_without_descriptions(self):
-        schema = _build_agent_item_schema(
+        schema = _item_schema(
             presets={"w": Preset()}, instructions=Open(), tools=None, mcp_servers=Inherit(), model=None
         )
         assert schema["properties"]["agent_type"]["description"] == "Role to assign this agent."
-
-
-class TestBuildDescription:
-    def test_with_and_without_presets(self):
-        assert _build_description("Base.", {}) == "Base."
-        desc = _build_description("Base.", {"w": Preset(description="Writes.")})
-        assert "w" in desc and "Writes." in desc
-
-
-class TestResolveSpecs:
-    @pytest.mark.parametrize(
-        "agents,match",
-        [
-            ("bad", "must be a list"),
-            ([], "At least 1"),
-            ([{"name": "a"}] * 25, "At most 20"),
-            (["not a dict"], "must be a dict"),
-            ([{}], "non-empty 'name'"),
-            ([{"name": "a"}, {"name": "a"}], "Duplicate"),
-        ],
-    )
-    def test_rejects_invalid_input(self, agents, match):
-        with pytest.raises(ValueError, match=match):
-            _resolve_specs(agents, **_kwargs())
-
-    def test_resolves_instructions_and_names(self):
-        specs = _resolve_specs([_spec("a", instructions="Do."), _spec("b")], **_kwargs())
-        assert [s.name for s in specs] == ["a", "b"]
-        assert specs[0].instructions == "Do."
-
-    def test_presets_and_defaults(self):
-        kw = _kwargs()
-        kw["presets"] = {"writer": Preset(instructions="Write.")}
-        kw["default_preset"] = "writer"
-        assert _resolve_specs([_spec("a", agent_type="writer")], **kw)[0].instructions == "Write."
-        assert _resolve_specs([_spec("b")], **kw)[0].instructions == "Write."  # default
-        with pytest.raises(ValueError, match="Unknown agent_type"):
-            _resolve_specs([_spec("c", agent_type="nope")], **kw)
-
-    def test_choice_tools_filtered(self):
-        kw = _kwargs()
-        kw["tools"] = Choice(["calc", "fetch"], multiple=True)
-        assert _resolve_specs([_spec("a", tools=["calc", "unknown"])], **kw)[0].tools == ["calc"]
 
 
 class TestMakeSwarm:
@@ -257,8 +214,14 @@ class TestMakeSwarm:
         agents = swarm.tool_spec["inputSchema"]["json"]["properties"]["agents"]
         assert agents["minItems"] == 1 and agents["maxItems"] == _DEFAULT_MAX_AGENTS
         assert "first agent receives the task" in agents["description"]
-        assert agents["items"] == _build_agent_item_schema(
-            presets={}, instructions=Open(), tools=None, mcp_servers=None, model=Inherit()
+        assert swarm.tool_spec["inputSchema"]["json"] == _build_schema(
+            presets={},
+            default_preset=None,
+            instructions=Open(),
+            tools=None,
+            mcp_servers=None,
+            model=Inherit(),
+            max_agents=_DEFAULT_MAX_AGENTS,
         )
         assert swarm.tool_spec["description"] == DEFAULT_SWARM_DESCRIPTION
 
@@ -266,6 +229,7 @@ class TestMakeSwarm:
         """The factory wires its axes, presets, and max_agents into the schema and description."""
         axes = dict(
             presets={"writer": Preset(description="Writes.")},
+            default_preset="writer",
             instructions=Choice(["A"]),
             tools=Choice(["calc"], multiple=True),
             mcp_servers=Choice(["docs", "gh"], multiple=True),
@@ -274,8 +238,9 @@ class TestMakeSwarm:
         t = make_swarm(max_agents=3, **axes)
         agents = t.tool_spec["inputSchema"]["json"]["properties"]["agents"]
         assert agents["maxItems"] == 3
-        assert agents["items"] == _build_agent_item_schema(**axes)
-        assert t.tool_spec["description"] == _build_description(DEFAULT_SWARM_DESCRIPTION, axes["presets"])
+        assert "Omit to use the default ('writer')." in agents["items"]["properties"]["agent_type"]["description"]
+        assert t.tool_spec["inputSchema"]["json"] == _build_schema(max_agents=3, **axes)
+        assert t.tool_spec["description"] == _append_presets(DEFAULT_SWARM_DESCRIPTION, axes["presets"])
 
 
 class TestSwarmToolExecution:
@@ -316,11 +281,17 @@ class TestSwarmToolExecution:
         assert {k: cls.call_args[1][k] for k in limits} == limits
 
     @pytest.mark.asyncio
-    async def test_validates_agents_against_max_agents(self):
-        with pytest.raises(ValueError, match="At most 2"):
-            await _run(
-                make_swarm(max_agents=2), task="t", agents=[_spec("a"), _spec("b"), _spec("c")], tool_context=_ctx()
-            )
+    @pytest.mark.parametrize(
+        "agents,match",
+        [
+            ([], "Between 1 and 2"),
+            ([_spec("a"), _spec("b"), _spec("c")], "Between 1 and 2"),
+            ([{}], "non-empty 'name'"),
+        ],
+    )
+    async def test_rejects_invalid_agents(self, agents, match):
+        with pytest.raises(ValueError, match=match):
+            await _run(make_swarm(max_agents=2), task="t", agents=agents, tool_context=_ctx())
 
     @pytest.mark.asyncio
     async def test_failed_status_raises(self):
@@ -387,6 +358,27 @@ class TestChildren:
         for child in children:
             assert child.state.get(_DEPTH_STATE_KEY) == expected_depth
             assert "handoff_to_agent" not in child.tool_registry.registry
+
+    @pytest.mark.asyncio
+    async def test_preset_reused_across_children(self):
+        built = []
+
+        def build(spec):
+            built.append(spec)
+            child = Mock()
+            child.state = AgentState()
+            child.tool_registry = ToolRegistry()
+            return child
+
+        custom = make_swarm(builder=build, presets={"expert": Preset(instructions="be expert")})
+        with _patch() as cls:
+            agents = [_spec("a", agent_type="expert"), _spec("b")]
+            await _run(custom, task="t", agents=agents, tool_context=_ctx(_mock_parent()))
+        assert [(s.name, s.agent_type, s.instructions) for s in built] == [
+            ("a", "expert", "be expert"),
+            ("b", "expert", "be expert"),
+        ]
+        assert len(cls.call_args[1]["nodes"]) == 2
 
     @pytest.mark.asyncio
     async def test_exhausted_depth_raises(self):

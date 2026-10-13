@@ -23,8 +23,10 @@ from ...multiagent.spec import (
     Inherit,
     Open,
     Preset,
+    _append_presets,
     _default_builder,
-    _resolve_spec,
+    _resolve_specs,
+    _to_schema_properties,
 )
 from ...tools.tools import AgentTool
 from ...types._events import ToolInterruptEvent, ToolResultEvent, ToolStreamEvent
@@ -59,13 +61,6 @@ _FRAMING_END = f"</parent_context>\n\n{_CONTEXT_PREAMBLE}\n\n"
 _SENTINEL = re.compile(r"<(/?)parent_context>")
 
 
-def _description(base: str, presets: Mapping[str, Preset]) -> str:
-    if not presets:
-        return base
-    roles = "\n".join(f"- {name}: {p.description or name}" for name, p in presets.items())
-    return f"{base}\n\nAvailable subagents (agent_type):\n{roles}"
-
-
 def _build_schema(
     *,
     presets: Mapping[str, Preset],
@@ -77,61 +72,39 @@ def _build_schema(
     context: Fixed | Choice,
 ) -> dict[str, Any]:
     """Derive the tool's input schema from the axis modes."""
-    props: dict[str, Any] = {
+    properties: dict[str, Any] = {
         "task": {
             "type": "string",
             "description": "The self-contained task, including all context the subagent needs. "
             "It cannot ask follow-up questions.",
-        }
+        },
+        **_to_schema_properties(
+            presets=presets,
+            default_preset=default_preset,
+            instructions=instructions,
+            tools=tools,
+            mcp_servers=mcp_servers,
+            model=model,
+        ),
     }
-    required = ["task"]
-
-    if presets:
-        props["agent_type"] = {
-            "type": "string",
-            "enum": list(presets),
-            "description": f"Which subagent role to use. Omit to use the default ({default_preset!r}).",
-        }
-
-    if isinstance(instructions, Open):
-        props["instructions"] = {
-            "type": "string",
-            "description": "A system prompt defining the subagent's role.",
-        }
-    elif isinstance(instructions, Choice):
-        props["instructions"] = instructions.to_schema_property("A system prompt defining the subagent's role.")
-
-    if isinstance(tools, Choice):
-        props["tools"] = tools.to_schema_property(
-            "Subset of tools to grant the subagent. Fewer is safer; it cannot exceed your own. "
-            "Omit to grant all inherited tools."
-        )
-
-    if isinstance(mcp_servers, Choice):
-        props["mcp_servers"] = mcp_servers.to_schema_property(
-            "Subset of MCP servers whose tools to grant the subagent. Fewer is safer; it cannot "
-            "exceed your own. Omit to grant all of them.",
-        )
-
-    if isinstance(model, Choice):
-        props["model"] = model.to_schema_property(
-            "Which model the subagent runs on. Omit to inherit the parent's model."
-        )
-
     if isinstance(context, Choice):
-        props["context"] = context.to_schema_property(
-            "How much of this conversation the subagent sees: 'none' (fresh start), 'all' (full "
+        options = context.normalized()
+        lines = [f"- {option.name}: {option.description}" for option in options if option.description]
+        options_text = "\nOptions:\n" + "\n".join(lines) if lines else ""
+        properties["context"] = {
+            "type": "string",
+            "enum": [option.name for option in options],
+            "description": "How much of this conversation the subagent sees: 'none' (fresh start), 'all' (full "
             "history including tool calls and their results — can be large), 'no_tools' (text turns "
-            "only — tool calls and their results removed). More context costs more tokens.",
-        )
-        if any(str(o.value) != "none" for o in context.normalized()):
-            props["last_messages"] = {
-                "type": "integer",
-                "description": "Optional: limit the shared context to the last N messages. Omit to "
-                "share all of the selected context.",
-            }
-
-    return {"type": "object", "properties": props, "required": required}
+            "only — tool calls and their results removed). More context costs more tokens." + options_text,
+        }
+    if isinstance(context, Choice) and any(str(o.value) != "none" for o in context.normalized()):
+        properties["last_messages"] = {
+            "type": "integer",
+            "description": "Optional: limit the shared context to the last N messages. Omit to "
+            "share all of the selected context.",
+        }
+    return {"type": "object", "properties": properties, "required": ["task"]}
 
 
 class _SubagentTool(AgentTool):
@@ -428,20 +401,22 @@ def make_subagent(
     )
     tool_spec = {
         "name": name,
-        "description": _description(description, presets),
+        "description": _append_presets(description, presets),
         "inputSchema": {"json": schema},
     }
 
     def resolve(raw: Mapping[str, Any]) -> AgentSpec:
-        return _resolve_spec(
-            raw,
+        # The schema has no name field; the child takes the tool's name.
+        model_input: list[Mapping[str, Any]] = [{**raw, "name": name}]
+        return _resolve_specs(
+            model_input,
             presets=presets,
             default_preset=default_preset,
             instructions=instructions,
             tools=tools,
             mcp_servers=mcp_servers,
             model=model,
-        )
+        )[0]
 
     return _SubagentTool(name, tool_spec, resolve, context, builder, max_depth)
 

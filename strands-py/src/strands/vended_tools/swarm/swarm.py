@@ -16,14 +16,15 @@ from typing import TYPE_CHECKING, Any
 from ...multiagent.base import Status
 from ...multiagent.spec import (
     AgentBuilder,
-    AgentSpec,
     Choice,
     Fixed,
     Inherit,
     Open,
     Preset,
+    _append_presets,
     _default_builder,
-    _resolve_spec,
+    _resolve_specs,
+    _to_schema_properties,
 )
 from ...multiagent.swarm import Swarm, SwarmResult
 from ...tools.decorator import tool
@@ -137,40 +138,22 @@ def make_swarm(
             raise ValueError("tools=Choice(...) must be multiple=True; a swarm child selects a subset of tools.")
 
     # Build the model-facing description with preset info.
-    tool_description = _build_description(description, presets)
+    tool_description = _append_presets(description, presets)
 
-    # Build the full input schema upfront so the model sees typed agent dicts.
-    agent_item_schema = _build_agent_item_schema(
+    input_schema = _build_schema(
         presets=presets,
+        default_preset=default_preset,
         instructions=instructions,
         tools=tools,
         mcp_servers=mcp_servers,
         model=model,
+        max_agents=max_agents,
     )
-    input_schema = {
-        "json": {
-            "type": "object",
-            "required": ["task", "agents"],
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "The objective for the agent team.",
-                },
-                "agents": {
-                    "type": "array",
-                    "description": "Agent specifications. The first agent receives the task and starts the swarm.",
-                    "items": agent_item_schema,
-                    "minItems": 1,
-                    "maxItems": max_agents,
-                },
-            },
-        }
-    }
 
-    @tool(name=name, description=tool_description, inputSchema=input_schema, context="tool_context")
+    @tool(name=name, description=tool_description, inputSchema={"json": input_schema}, context="tool_context")
     async def swarm_tool(
         task: str,
-        agents: list[dict[str, Any]],
+        agents: list[Mapping[str, Any]],
         tool_context: ToolContext,
     ) -> AsyncGenerator[Any, None]:
         """Spins up a team of agents that collaborate via handoffs to solve a task.
@@ -191,7 +174,6 @@ def make_swarm(
 
         specs = _resolve_specs(
             agents,
-            max_agents=max_agents,
             presets=presets,
             default_preset=default_preset,
             instructions=instructions,
@@ -199,6 +181,8 @@ def make_swarm(
             mcp_servers=mcp_servers,
             model=model,
         )
+        if not 1 <= len(specs) <= max_agents:
+            raise ValueError(f"Between 1 and {max_agents} agents required, got {len(specs)}")
         child_agents = []
         for spec in specs:
             child = build(spec)
@@ -250,117 +234,49 @@ def make_swarm(
 # ---- Internals ----
 
 
-def _resolve_specs(
-    agents: list[dict[str, Any]],
+def _build_schema(
     *,
-    max_agents: int,
     presets: Mapping[str, Preset],
     default_preset: str | None,
     instructions: Open | Choice | Fixed,
     tools: Choice | Fixed | Inherit | None,
     mcp_servers: Choice | Fixed | Inherit | None,
-    model: Inherit | Choice | Fixed,
-) -> list[AgentSpec]:
-    """Validate raw agent dicts from the model and resolve them to specs.
-
-    Raises:
-        ValueError: On any validation or resolution failure.
-    """
-    if not isinstance(agents, list):
-        raise ValueError(f"agents must be a list, got {type(agents).__name__}")
-    if len(agents) < 1:
-        raise ValueError(f"At least 1 agent(s) required, got {len(agents)}")
-    if len(agents) > max_agents:
-        raise ValueError(f"At most {max_agents} agents allowed, got {len(agents)}")
-
-    seen_names: set[str] = set()
-    specs: list[AgentSpec] = []
-    for index, entry in enumerate(agents):
-        if not isinstance(entry, dict):
-            raise ValueError(f"Agent at index {index} must be a dict, got {type(entry).__name__}")
-        name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"Agent at index {index} must have a non-empty 'name' string")
-        name = name.strip()
-        entry["name"] = name
-        if name in seen_names:
-            raise ValueError(f"Duplicate agent name {name!r} at index {index}")
-        seen_names.add(name)
-
-        spec = _resolve_spec(
-            entry,
-            presets=presets,
-            default_preset=default_preset,
-            instructions=instructions,
-            tools=tools,
-            mcp_servers=mcp_servers,
-            model=model,
-        )
-        specs.append(spec)
-
-    return specs
-
-
-def _build_agent_item_schema(
-    *,
-    presets: Mapping[str, Preset],
-    instructions: Open | Choice | Fixed,
-    tools: Choice | Fixed | Inherit | None,
-    mcp_servers: Choice | Fixed | Inherit | None,
     model: Inherit | Choice | Fixed | None,
+    max_agents: int,
 ) -> dict[str, Any]:
-    """Build the JSON Schema for a single agent dict inside the ``agents`` array.
-
-    Only axes the model is allowed to influence produce properties; ``Fixed`` and
-    ``Inherit`` axes are invisible to the model.
-    """
-    properties: dict[str, Any] = {
-        "name": {"type": "string", "description": "A unique name for this agent."},
-    }
-    required = ["name"]
-
-    if presets:
-        preset_names = sorted(presets)
-        lines = [f"- {n}: {presets[n].description}" for n in preset_names if presets[n].description]
-        desc = "Role to assign this agent."
-        if lines:
-            desc += "\n" + "\n".join(lines)
-        properties["agent_type"] = {"type": "string", "enum": preset_names, "description": desc}
-
-    if isinstance(instructions, Open):
-        properties["instructions"] = {
-            "type": "string",
-            "description": "System prompt for this agent.",
-        }
-        if not presets:
-            required.append("instructions")
-    elif isinstance(instructions, Choice):
-        properties["instructions"] = instructions.to_schema_property("System prompt for this agent.")
-
-    if isinstance(tools, Choice):
-        properties["tools"] = tools.to_schema_property("Tools this agent may use.")
-
-    if isinstance(mcp_servers, Choice):
-        properties["mcp_servers"] = mcp_servers.to_schema_property("MCP servers this agent may use.")
-
-    if isinstance(model, Choice):
-        properties["model"] = model.to_schema_property("Model for this agent.")
-
+    """Derive the tool's input schema from the axis modes; hidden axes produce no agent property."""
+    # Without a preset to fall back on, an Open prompt must come from the model.
+    required = ["name", "instructions"] if isinstance(instructions, Open) and not presets else ["name"]
+    axis_properties = _to_schema_properties(
+        presets=presets,
+        default_preset=default_preset,
+        instructions=instructions,
+        tools=tools,
+        mcp_servers=mcp_servers,
+        model=model,
+    )
     return {
         "type": "object",
-        "required": required,
-        "additionalProperties": False,
-        "properties": properties,
+        "required": ["task", "agents"],
+        "properties": {
+            "task": {"type": "string", "description": "The objective for the agent team."},
+            "agents": {
+                "type": "array",
+                "description": "Agent specifications. The first agent receives the task and starts the swarm.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "A unique name for this agent."},
+                        **axis_properties,
+                    },
+                    "required": required,
+                    "additionalProperties": False,
+                },
+                "minItems": 1,
+                "maxItems": max_agents,
+            },
+        },
     }
-
-
-def _build_description(base: str, presets: Mapping[str, Preset]) -> str:
-    """Append preset information to the tool description so the model knows about them."""
-    if not presets:
-        return base
-
-    roles = "\n".join(f"- {name}: {p.description or name}" for name, p in presets.items())
-    return f"{base}\n\nAvailable roles (agent_type):\n{roles}"
 
 
 swarm = make_swarm()
