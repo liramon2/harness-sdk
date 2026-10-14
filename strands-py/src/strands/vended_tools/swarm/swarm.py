@@ -10,6 +10,7 @@ runs the swarm, and maps the result.
 from __future__ import annotations
 
 import logging
+import weakref
 from collections.abc import AsyncGenerator, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_SWARM_DESCRIPTION = (
     "Spin up a team of AI agents that solve a task together by handing off to one another. "
     "Each agent has its own name, system prompt, and tools (drawn from your own). "
-    "Agents get their own handoff tool; your tools are otherwise passed through. "
+    "Agents get their own handoff tool and cannot start another swarm; your other tools are passed through. "
     "The `entry_point` agent (default: the first in `agents`) receives the "
     "task and starts the work. The run ends when an agent finishes without handing off. "
     "Returns each participating agent's final output, prefixed with its name. If the team "
@@ -50,14 +51,11 @@ DEFAULT_SWARM_DESCRIPTION = (
 _DEFAULT_MAX_AGENTS = 20
 """Upper bound on the number of agents a single swarm invocation may create."""
 
-_DEFAULT_MAX_DEPTH = 2
-"""Upper bound on the number of nested swarm levels."""
-
-_DEPTH_STATE_KEY = "strands.swarm_depth"
-"""Agent-state key used to propagate remaining nesting depth to children."""
-
 # The SDK Swarm raises ValueError if a node already has handoff_to_agent.
 _EXCLUDED_TOOLS = frozenset({"handoff_to_agent"})
+
+# Every swarm tool created, so children lose all of them regardless of name or instance.
+_SWARM_TOOLS: weakref.WeakSet[DecoratedFunctionTool] = weakref.WeakSet()
 
 
 def make_swarm(
@@ -72,7 +70,6 @@ def make_swarm(
     mcp_servers: Choice | Fixed | Inherit | None = None,
     model: Inherit | Choice | Fixed | None = None,
     max_agents: int = _DEFAULT_MAX_AGENTS,
-    max_depth: int = _DEFAULT_MAX_DEPTH,
     max_handoffs: int | None = None,
     max_iterations: int | None = None,
     execution_timeout: float | None = None,
@@ -85,8 +82,8 @@ def make_swarm(
     The swarm tool is a meta-agent tool: the model defines the agents it needs at runtime.
     Each agent spec from the model is resolved through the authority-mode system
     (see :mod:`~strands.multiagent.spec`), then built via ``builder``. A running swarm
-    cannot be cancelled from the parent agent. If no swarm limits are configured, the
-    Swarm primitive's defaults are used.
+    cannot be cancelled from the parent agent. Children never receive a swarm tool, so swarms
+    do not nest. If no swarm limits are configured, the Swarm primitive's defaults are used.
 
     Args:
         name: Tool name shown to the model.
@@ -101,7 +98,6 @@ def make_swarm(
         mcp_servers: Authority mode for the MCP servers axis.
         model: Authority mode for the model axis.
         max_agents: Upper bound on agents per invocation.
-        max_depth: Maximum nesting depth for recursive swarm calls (>= 1).
         max_handoffs: Maximum handoffs between agents.
         max_iterations: Maximum total agent invocations.
         execution_timeout: Total timeout in seconds.
@@ -114,8 +110,6 @@ def make_swarm(
     """
     if not isinstance(max_agents, int) or isinstance(max_agents, bool) or max_agents < 1:
         raise ValueError("max_agents must be a positive integer")
-    if not isinstance(max_depth, int) or isinstance(max_depth, bool) or max_depth < 1:
-        raise ValueError("max_depth must be a positive integer (>= 1)")
 
     presets = dict(presets or {})
     instructions = instructions if instructions is not None else Open()
@@ -154,11 +148,6 @@ def make_swarm(
         """
         parent = tool_context.agent
 
-        stored = parent.state.get(_DEPTH_STATE_KEY) if parent else None
-        depth = stored if stored is not None else max_depth
-        if depth <= 0:
-            raise RuntimeError("Swarm nesting depth limit reached; complete this task without spawning another swarm.")
-
         build = builder or _default_builder(parent)
 
         specs = _resolve_specs(
@@ -177,9 +166,9 @@ def make_swarm(
         child_agents = {}
         for spec in specs:
             child = build(spec)
-            child.state.set(_DEPTH_STATE_KEY, depth - 1)
-            for tool_name in _EXCLUDED_TOOLS:
-                child.tool_registry.registry.pop(tool_name, None)
+            for tool_name, child_tool in list(child.tool_registry.registry.items()):
+                if tool_name in _EXCLUDED_TOOLS or child_tool in _SWARM_TOOLS:
+                    del child.tool_registry.registry[tool_name]
             child_agents[spec.name] = child
 
         swarm_kwargs: dict[str, Any] = {"nodes": list(child_agents.values())}
@@ -221,6 +210,7 @@ def make_swarm(
 
         yield str(result)
 
+    _SWARM_TOOLS.add(swarm_tool)
     return swarm_tool
 
 

@@ -25,7 +25,6 @@ from strands.types.tools import ToolContext
 from strands.vended_tools.swarm import make_swarm, swarm
 from strands.vended_tools.swarm.swarm import (
     _DEFAULT_MAX_AGENTS,
-    _DEPTH_STATE_KEY,
     DEFAULT_SWARM_DESCRIPTION,
     _build_schema,
 )
@@ -34,7 +33,7 @@ from tests.fixtures.mocked_model_provider import MockedModelProvider
 _swarm_module = importlib.import_module("strands.vended_tools.swarm.swarm")
 
 
-def _mock_parent(tool_names: list[str] | None = None, state: dict | None = None) -> SimpleNamespace:
+def _mock_parent(tool_names: list[str] | None = None) -> SimpleNamespace:
     registry = ToolRegistry()
     if tool_names:
         for name in tool_names:
@@ -47,7 +46,7 @@ def _mock_parent(tool_names: list[str] | None = None, state: dict | None = None)
         sandbox=None,
         callback_handler=None,
         trace_attributes=None,
-        state=AgentState(state),
+        state=AgentState(),
     )
 
 
@@ -198,8 +197,6 @@ class TestMakeSwarm:
         [
             ({"max_agents": 0}, "max_agents"),
             ({"max_agents": True}, "max_agents"),
-            ({"max_depth": 0}, "max_depth"),
-            ({"max_depth": True}, "max_depth"),
         ],
     )
     def test_rejects_invalid_limits(self, kw, match):
@@ -334,9 +331,9 @@ class TestEndToEnd:
 
 class TestChildren:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("stored_depth,expected_depth,entry_point", [(None, 2, None), (2, 1, "b")])
-    async def test_builds_children(self, stored_depth, expected_depth, entry_point):
-        """Children get resolved specs and decremented depth, lose handoff_to_agent, and honor entry_point."""
+    @pytest.mark.parametrize("entry_point", [None, "b"])
+    async def test_builds_children(self, entry_point):
+        """Children get resolved specs, lose handoff_to_agent and every swarm tool, and honor entry_point."""
         specs, children = [], []
 
         def builder(spec):
@@ -345,17 +342,19 @@ class TestChildren:
             child.state = AgentState()
             child.tool_registry = ToolRegistry()
             child.tool_registry.registry["handoff_to_agent"] = Mock()
+            child.tool_registry.registry["team"] = custom
+            child.tool_registry.registry["swarm"] = make_swarm()
+            child.tool_registry.registry["keep"] = Mock()
             children.append(child)
             return child
 
-        state = {} if stored_depth is None else {_DEPTH_STATE_KEY: stored_depth}
-        custom = make_swarm(builder=builder, instructions=Fixed("Locked."), max_depth=3)
+        custom = make_swarm(name="team", builder=builder, instructions=Fixed("Locked."))
         with _patch() as cls:
             await _run(
                 custom,
                 task="t",
                 agents=[_spec("a"), _spec("b")],
-                tool_context=_ctx(_mock_parent(state=state)),
+                tool_context=_ctx(_mock_parent()),
                 entry_point=entry_point,
             )
 
@@ -363,8 +362,7 @@ class TestChildren:
         assert cls.call_args[1]["nodes"] == children
         assert cls.call_args[1].get("entry_point") is (children[1] if entry_point else None)
         for child in children:
-            assert child.state.get(_DEPTH_STATE_KEY) == expected_depth
-            assert "handoff_to_agent" not in child.tool_registry.registry
+            assert list(child.tool_registry.registry) == ["keep"]
 
     @pytest.mark.asyncio
     async def test_preset_reused_across_children(self):
@@ -386,9 +384,3 @@ class TestChildren:
             ("b", "expert", "be expert"),
         ]
         assert len(cls.call_args[1]["nodes"]) == 2
-
-    @pytest.mark.asyncio
-    async def test_exhausted_depth_raises(self):
-        parent = _mock_parent(state={_DEPTH_STATE_KEY: 0})
-        with pytest.raises(RuntimeError, match="depth limit reached"):
-            await _run(swarm, task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx(parent))
