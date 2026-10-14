@@ -1,4 +1,4 @@
-"""Swarm tool for spinning up a handoff-based sub-agent team at runtime.
+"""Swarm meta-agent tool for spinning up a handoff-based sub-agent team at runtime.
 
 Example Usage:
     ```python

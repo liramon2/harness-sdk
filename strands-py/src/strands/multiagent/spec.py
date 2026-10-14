@@ -8,10 +8,6 @@ the parameters the model sees and govern what values it can supply:
 - ``Inherit`` — value taken from the parent agent; hidden from the model.
 - ``Open``   — model supplies a free-form value.
 - ``Choice`` — model picks from a developer-supplied set.
-
-``_resolve_specs`` merges model-supplied arguments, preset defaults, and axis policies
-into fully resolved ``AgentSpec`` objects used to build child agents.  ``Inherit`` axes resolve
-to ``None`` (meaning "inherit all"); the class is a self-documenting marker.
 """
 
 from __future__ import annotations
@@ -141,6 +137,21 @@ def _append_presets(base: str, presets: Mapping[str, Preset]) -> str:
     return f"{base}\n\nAvailable presets (agent_type):\n{roles}"
 
 
+def _describe_preset(preset: Preset) -> str:
+    """The preset's description plus which fields it sets, omitting instruction text to keep the schema small."""
+    parts = []
+    if preset.instructions is not None:
+        parts.append("instructions")
+    if preset.tools is not None:
+        parts.append(f"tools: {', '.join(preset.tools) or 'none'}")
+    if preset.model is not None:
+        parts.append(f"model: {preset.model}" if isinstance(preset.model, str) else "model")
+    if not parts:
+        return preset.description
+    sets = f"sets {'; '.join(parts)}"
+    return f"{preset.description} ({sets})" if preset.description else sets
+
+
 def _to_schema_properties(
     *,
     presets: Mapping[str, Preset],
@@ -155,7 +166,7 @@ def _to_schema_properties(
     Raises:
         ValueError: If a ``Choice`` axis has no options, or a ``tools``/``mcp_servers`` ``Choice`` is not ``multiple``.
     """
-    agent_type = Choice([Option(n, description=p.description) for n, p in presets.items()]) if presets else None
+    agent_type = Choice([Option(n, description=_describe_preset(p)) for n, p in presets.items()]) if presets else None
     axes: dict[str, Axis | None] = {
         "agent_type": agent_type,
         "instructions": instructions,

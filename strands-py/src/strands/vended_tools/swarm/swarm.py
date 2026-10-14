@@ -1,4 +1,4 @@
-"""Swarm tool for spinning up a handoff-based sub-agent team at runtime.
+"""Swarm meta-agent tool for spinning up a handoff-based sub-agent team at runtime.
 
 Provides :func:`make_swarm` (a factory that lets the developer pin safety
 limits and authority modes) and :data:`swarm` (a default instance). The tool is
@@ -82,6 +82,7 @@ def make_swarm(
 ) -> DecoratedFunctionTool:
     """Create a swarm tool with developer-controlled safety limits and authority modes.
 
+    The swarm tool is a meta-agent tool: the model defines the agents it needs at runtime.
     Each agent spec from the model is resolved through the authority-mode system
     (see :mod:`~strands.multiagent.spec`), then built via ``builder``. A running swarm
     cannot be cancelled from the parent agent. If no swarm limits are configured, the
@@ -142,7 +143,7 @@ def make_swarm(
         agents: list[Mapping[str, Any]],
         tool_context: ToolContext,
         entry_point: str | None = None,
-    ) -> AsyncGenerator[Any, None]:
+    ) -> AsyncGenerator[dict[str, Any] | str, None]:
         """Spins up a team of agents that collaborate via handoffs to solve a task.
 
         Args:
@@ -154,7 +155,7 @@ def make_swarm(
         parent = tool_context.agent
 
         stored = parent.state.get(_DEPTH_STATE_KEY) if parent else None
-        depth = max_depth if stored is None else stored
+        depth = stored if stored is not None else max_depth
         if depth <= 0:
             raise RuntimeError("Swarm nesting depth limit reached; complete this task without spawning another swarm.")
 
