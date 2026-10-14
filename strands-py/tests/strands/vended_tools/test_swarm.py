@@ -194,20 +194,16 @@ class TestMakeSwarm:
         assert make_swarm(name="team").tool_name == "team"
 
     @pytest.mark.parametrize(
-        "kw",
+        "kw,match",
         [
-            {"max_agents": 0},
-            {"max_agents": True},
-            {"max_depth": 0},
-            {"max_depth": True},
-            {"tools": Choice([], multiple=True)},
-            {"tools": Choice(["a"])},  # multiple=False on a list axis
-            {"mcp_servers": Choice([], multiple=True)},
-            {"mcp_servers": Choice(["a"])},  # multiple=False on a list axis
+            ({"max_agents": 0}, "max_agents"),
+            ({"max_agents": True}, "max_agents"),
+            ({"max_depth": 0}, "max_depth"),
+            ({"max_depth": True}, "max_depth"),
         ],
     )
-    def test_rejects_invalid_limits(self, kw):
-        with pytest.raises(ValueError):
+    def test_rejects_invalid_limits(self, kw, match):
+        with pytest.raises(ValueError, match=match):
             make_swarm(**kw)
 
     def test_default_spec(self):

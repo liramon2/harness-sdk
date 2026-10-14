@@ -123,20 +123,6 @@ def make_swarm(
     if default_preset is None and presets:
         default_preset = next(iter(presets))
 
-    if isinstance(mcp_servers, Choice):
-        if not mcp_servers.options:
-            raise ValueError("mcp_servers=Choice([]) offers no options; use Fixed([]) for no servers, or Inherit().")
-        if not mcp_servers.multiple:
-            raise ValueError(
-                "mcp_servers=Choice(...) must be multiple=True; a swarm child selects a subset of servers."
-            )
-
-    if isinstance(tools, Choice):
-        if not tools.options:
-            raise ValueError("tools=Choice([]) offers no options; use Fixed([]) for a toolless child, or Inherit().")
-        if not tools.multiple:
-            raise ValueError("tools=Choice(...) must be multiple=True; a swarm child selects a subset of tools.")
-
     # Build the model-facing description with preset info.
     tool_description = _append_presets(description, presets)
 

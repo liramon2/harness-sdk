@@ -66,8 +66,8 @@ def _build_schema(
     presets: Mapping[str, Preset],
     default_preset: str | None,
     instructions: Open | Choice | Fixed,
-    tools: Choice | Fixed | Inherit,
-    mcp_servers: Choice | Fixed | Inherit,
+    tools: Choice | Fixed | Inherit | None,
+    mcp_servers: Choice | Fixed | Inherit | None,
     model: Inherit | Choice | Fixed,
     context: Fixed | Choice,
 ) -> dict[str, Any]:
@@ -372,23 +372,6 @@ def make_subagent(
     context = context if context is not None else Fixed("none")
     if default_preset is None and presets:
         default_preset = next(iter(presets))
-
-    # A tools Choice must be multiple.
-    if tools is None:
-        tools = Inherit()
-    elif isinstance(tools, Choice):
-        if not tools.options:
-            raise ValueError("tools=Choice([]) offers no options; use Fixed([]) for a toolless child, or Inherit().")
-        if not tools.multiple:
-            raise ValueError("tools=Choice(...) must be multiple=True; a subagent selects a subset of tools.")
-
-    if mcp_servers is None:
-        mcp_servers = Inherit()
-    elif isinstance(mcp_servers, Choice):
-        if not mcp_servers.options:
-            raise ValueError("mcp_servers=Choice([]) offers no options; use Fixed([]) for no servers, or Inherit().")
-        if not mcp_servers.multiple:
-            raise ValueError("mcp_servers=Choice(...) must be multiple=True; a subagent selects a subset of servers.")
 
     schema = _build_schema(
         presets=presets,

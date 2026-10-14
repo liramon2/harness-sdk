@@ -150,7 +150,11 @@ def _to_schema_properties(
     mcp_servers: Axis | None,
     model: Axis | None,
 ) -> dict[str, Any]:
-    """Render each model-visible axis, plus an ``agent_type`` choice over ``presets``, as JSON Schema properties."""
+    """Render each model-visible axis, plus an ``agent_type`` choice over ``presets``, as JSON Schema properties.
+
+    Raises:
+        ValueError: If a ``Choice`` axis has no options, or a ``tools``/``mcp_servers`` ``Choice`` is not ``multiple``.
+    """
     agent_type = Choice([Option(n, description=p.description) for n, p in presets.items()]) if presets else None
     axes: dict[str, Axis | None] = {
         "agent_type": agent_type,
@@ -168,6 +172,12 @@ def _to_schema_properties(
             prop: dict[str, Any] = {"type": "string"}
         elif isinstance(axis, Choice):
             options = axis.normalized()
+            if not options:
+                raise ValueError(
+                    f"{key}=Choice([]) offers no options; use Fixed(...), or omit {key} to use its default."
+                )
+            if key in ("tools", "mcp_servers") and not axis.multiple:
+                raise ValueError(f"{key}=Choice(...) must be multiple=True; a child agent selects a subset of {key}.")
             values = [option.name for option in options]
             lines = [f"- {option.name}: {option.description}" for option in options if option.description]
             if lines:

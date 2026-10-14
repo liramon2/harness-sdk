@@ -80,6 +80,22 @@ def test_to_schema_properties():
     assert _to_schema_properties(presets={}, default_preset=None, **empty) == {}
 
 
+@pytest.mark.parametrize(
+    "axis,match",
+    [
+        ({"tools": Choice([])}, "offers no options"),
+        ({"tools": Choice(["read", "shell"])}, "must be multiple"),
+        ({"mcp_servers": Choice([])}, "offers no options"),
+        ({"mcp_servers": Choice(["fs"])}, "must be multiple"),
+        ({"instructions": Choice([])}, "offers no options"),
+        ({"model": Choice([])}, "offers no options"),
+    ],
+)
+def test_invalid_choice_raises(axis, match):
+    with pytest.raises(ValueError, match=match):
+        _to_schema_properties(**{**_AXES, **axis})
+
+
 def test_choice_value_for_known_and_unknown():
     c = Choice([Option("alias", "real")])
     assert c.value_for("alias") == "real"

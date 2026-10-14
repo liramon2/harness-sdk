@@ -109,20 +109,6 @@ def test_presets_add_agent_type_parameter():
     assert "generalist" in props["agent_type"]["description"]
 
 
-@pytest.mark.parametrize(
-    "axis,match",
-    [
-        ({"tools": Choice([])}, "offers no options"),
-        ({"tools": Choice(["read", "shell"])}, "must be multiple"),
-        ({"mcp_servers": Choice([])}, "offers no options"),
-        ({"mcp_servers": Choice(["fs"])}, "must be multiple"),
-    ],
-)
-def test_invalid_choice_raises(axis, match):
-    with pytest.raises(ValueError, match=match):
-        make_subagent(builder=lambda spec: None, **axis)
-
-
 @pytest.mark.parametrize("kwargs", [{"name": ""}, {"description": ""}, {"max_depth": 0}, {"max_depth": -1}])
 def test_make_subagent_rejects_invalid_args(kwargs):
     with pytest.raises(ValueError):
