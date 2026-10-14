@@ -120,7 +120,7 @@ def make_graph(
         max_nodes: Upper bound on nodes per invocation.
         max_edges: Upper bound on edges per invocation.
         max_depth: Maximum nesting depth for recursive graph calls (>= 1).
-        max_node_executions: Maximum total node executions across the graph.
+        max_node_executions: Maximum total node executions across the graph. ``None`` for no limit.
         execution_timeout: Total timeout in seconds. ``None`` for no limit.
         node_timeout: Per-node timeout in seconds. ``None`` for no limit.
 
@@ -128,14 +128,18 @@ def make_graph(
         A decorated tool that builds and runs a :class:`~strands.multiagent.graph.Graph`.
 
     Raises:
-        ValueError: If a limit is not a positive integer, *max_nodes* < 2, or a ``Choice`` axis violates
-            its constraints (empty options, ``multiple=False`` for tools or MCP servers).
+        ValueError: If a count limit is not a positive integer, a timeout is not a positive number,
+            *max_nodes* < 2, or a ``Choice`` axis violates its constraints (empty options,
+            ``multiple=False`` for tools or MCP servers).
     """
-    for limit_name, limit in (("max_nodes", max_nodes), ("max_edges", max_edges), ("max_depth", max_depth)):
-        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
-            raise ValueError(f"{limit_name} must be a positive integer")
-    if max_nodes < 2:
-        raise ValueError("max_nodes must be at least 2")
+    _validate_limits(
+        max_nodes=max_nodes,
+        max_edges=max_edges,
+        max_depth=max_depth,
+        max_node_executions=max_node_executions,
+        execution_timeout=execution_timeout,
+        node_timeout=node_timeout,
+    )
 
     presets = dict(presets or {})
     instructions = instructions if instructions is not None else Open()
@@ -253,6 +257,36 @@ def make_graph(
 
 
 # ---- Internals ----
+
+
+def _validate_limits(
+    *,
+    max_nodes: int,
+    max_edges: int,
+    max_depth: int,
+    max_node_executions: int | None,
+    execution_timeout: float | None,
+    node_timeout: float | None,
+) -> None:
+    """Validate the developer-supplied graph limits; ``None`` means no limit where allowed.
+
+    Raises:
+        ValueError: If a count limit is not a positive integer, a timeout is not a positive number,
+            or *max_nodes* < 2.
+    """
+    limits = {"max_nodes": max_nodes, "max_edges": max_edges, "max_depth": max_depth}
+    if max_node_executions is not None:
+        limits["max_node_executions"] = max_node_executions
+    # bool subclasses int, so it is rejected explicitly.
+    for limit_name, limit in limits.items():
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise ValueError(f"{limit_name} must be a positive integer")
+    timeouts = (("execution_timeout", execution_timeout), ("node_timeout", node_timeout))
+    for limit_name, timeout in timeouts:
+        if timeout is not None and (not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0):
+            raise ValueError(f"{limit_name} must be a positive number")
+    if max_nodes < 2:
+        raise ValueError("max_nodes must be at least 2")
 
 
 def _validate_edges(
