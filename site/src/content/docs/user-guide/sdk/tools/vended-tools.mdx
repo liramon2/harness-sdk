@@ -891,11 +891,9 @@ Full API reference: [TypeScript](https://github.com/strands-agents/harness-sdk/b
 
 ### Graph
 
-Lets your agent design and run a team of sub-agents at runtime as a [Graph](../multi-agent/graph.mdx). The model supplies a `task`, a list of `nodes` (each with a unique `name` and its own `instructions`), and a list of `edges`. Each edge `{from_node, to_node}` runs `to_node` after `from_node` finishes and passes it the upstream output. Nodes with no incoming edges receive the task directly, and nodes that become ready together run in parallel.
+Lets your agent design and run a team of sub-agents as a [Graph](../multi-agent/graph.mdx). The model supplies a `task`, a list of `nodes` (each with a unique `name` and its own `instructions`), and `edges` that order them. Nodes with no upstream nodes start in parallel, and each node receives its upstream outputs.
 
-Edges that reference unknown nodes, loop back on themselves, or form a cycle are rejected before any agent is built. The tool returns each node's final output, prefixed with its name. If the graph does not complete (a node fails, or an execution limit or timeout is hit), the call fails and the error includes the partial output.
-
-By default, every node inherits the caller's model, tools, and MCP servers. A node can call `graph` again to build a nested graph, up to `max_depth` levels (default: 2). A running graph cannot be cancelled from the parent agent.
+Nodes inherit the caller's model, tools (except `handoff_to_user`), and MCP servers. By default, a call times out after 900 seconds and each node after 300 seconds. A running graph cannot be cancelled from the parent agent.
 
 **Example:**
 
@@ -907,8 +905,7 @@ agent = Agent(tools=[graph, http_request])
 agent("Research three competing vector databases in parallel, then write a comparison table.")
 ```
 
-Use `make_graph` to cap the graph's size and runtime, and to control what the model may configure on each node with [axis policies](#axis-policies). The configurable axes are `instructions`, `tools`, `mcp_servers`, and `model`. A `Choice` on `tools` or `mcp_servers` must set `multiple=True`.
-`make_graph` also accepts `builder` to construct each node agent yourself from the resolved `AgentSpec` and `max_node_executions` to cap the total number of node runs.
+Use `make_graph` to set limits (`max_nodes`, `max_edges`, `max_depth`, `max_node_executions`, `execution_timeout`, `node_timeout`), build each node agent yourself with `builder`, or control what the model configures on each node with [axis policies](#axis-policies) over `instructions`, `tools`, `mcp_servers`, and `model`.
 
 **Custom configuration:**
 

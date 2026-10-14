@@ -31,6 +31,7 @@ from ...multiagent.spec import (
 )
 from ...tools.decorator import tool
 from ...types.tools import ToolContext
+from ..handoff_to_user import handoff_to_user
 
 if TYPE_CHECKING:
     from ...tools.decorator import DecoratedFunctionTool
@@ -67,6 +68,15 @@ _DEFAULT_MAX_EDGES = 50
 _DEFAULT_MAX_DEPTH = 2
 """Upper bound on the number of nested graph levels."""
 
+_DEFAULT_EXECUTION_TIMEOUT = 900.0
+"""Total timeout in seconds for one graph invocation."""
+
+_DEFAULT_NODE_TIMEOUT = 300.0
+"""Timeout in seconds for one node execution."""
+
+# A graph cannot pause for user input, so children do not get the user-handoff tool.
+_EXCLUDED_TOOLS = frozenset({handoff_to_user.tool_name})
+
 _DEPTH_STATE_KEY = "strands.graph_depth"
 """Agent-state key used to propagate remaining nesting depth to children."""
 
@@ -86,15 +96,14 @@ def make_graph(
     max_edges: int = _DEFAULT_MAX_EDGES,
     max_depth: int = _DEFAULT_MAX_DEPTH,
     max_node_executions: int | None = None,
-    execution_timeout: float | None = None,
-    node_timeout: float | None = None,
+    execution_timeout: float | None = _DEFAULT_EXECUTION_TIMEOUT,
+    node_timeout: float | None = _DEFAULT_NODE_TIMEOUT,
 ) -> DecoratedFunctionTool:
     """Create a graph tool with developer-controlled safety limits and authority modes.
 
     Each node spec from the model is resolved through the authority-mode system
     (see :mod:`~strands.multiagent.spec`), then built via ``builder``. A running graph
-    cannot be cancelled from the parent agent. If no graph limits are configured, the
-    Graph primitive's defaults are used.
+    cannot be cancelled from the parent agent.
 
     Args:
         name: Tool name shown to the model.
@@ -112,8 +121,8 @@ def make_graph(
         max_edges: Upper bound on edges per invocation.
         max_depth: Maximum nesting depth for recursive graph calls (>= 1).
         max_node_executions: Maximum total node executions across the graph.
-        execution_timeout: Total timeout in seconds.
-        node_timeout: Per-node timeout in seconds.
+        execution_timeout: Total timeout in seconds. ``None`` for no limit.
+        node_timeout: Per-node timeout in seconds. ``None`` for no limit.
 
     Returns:
         A decorated tool that builds and runs a :class:`~strands.multiagent.graph.Graph`.
@@ -180,6 +189,7 @@ def make_graph(
             tools=tools,
             mcp_servers=mcp_servers,
             model=model,
+            label="node",
         )
         if not 2 <= len(specs) <= max_nodes:
             raise ValueError(f"Between 2 and {max_nodes} nodes required, got {len(specs)}")
@@ -189,6 +199,8 @@ def make_graph(
         for spec in specs:
             child = build(spec)
             child.state.set(_DEPTH_STATE_KEY, depth - 1)
+            for tool_name in _EXCLUDED_TOOLS:
+                child.tool_registry.registry.pop(tool_name, None)
             graph_builder.add_node(child, node_id=spec.name)
         for from_node, to_node in validated_edges:
             graph_builder.add_edge(from_node, to_node)
@@ -206,15 +218,29 @@ def make_graph(
         result: GraphResult | None = None
         # Copy so child cycles can't mutate the parent's state; drop request_state so a child's stop can't halt it.
         child_state = {k: v for k, v in tool_context.invocation_state.items() if k != "request_state"}
-        async for event in sdk_graph.stream_async(task, invocation_state=child_state):
-            # Hold back the final result event: the decorator treats the last yield as the tool result.
-            if event.get("type") == "multiagent_result":
-                result = event["result"]
-            else:
-                yield event
+        try:
+            async for event in sdk_graph.stream_async(task, invocation_state=child_state):
+                # Hold back the final result event: the decorator treats the last yield as the tool result.
+                if event.get("type") == "multiagent_result":
+                    result = event["result"]
+                else:
+                    yield event
+        except Exception as error:
+            failed = sorted(node.node_id for node in sdk_graph.state.failed_nodes)
+            finished = {node_id: res for node_id, res in sdk_graph.state.results.items() if node_id not in failed}
+            raise RuntimeError(
+                f"Graph node(s) {', '.join(failed) or 'unknown'} failed: {error}. "
+                f"Partial output:\n{GraphResult(results=finished)}"
+            ) from error
 
         if result is None:
             raise RuntimeError("Graph stream ended without producing a result")
+        if result.interrupts:
+            names = sorted({interrupt.name for interrupt in result.interrupts})
+            raise RuntimeError(
+                f"A node requested user input ({', '.join(names)}), but a graph cannot pause; "
+                "complete the task without that input or ask the user yourself."
+            )
         if result.status != Status.COMPLETED:
             raise RuntimeError(
                 f"Graph stopped before completing (status={result.status.value}, "

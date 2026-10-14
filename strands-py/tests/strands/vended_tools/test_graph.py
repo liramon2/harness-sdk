@@ -11,6 +11,7 @@ from strands import Agent
 from strands.agent import AgentResult
 from strands.agent.state import AgentState
 from strands.experimental.tools import stop
+from strands.interrupt import Interrupt
 from strands.multiagent.base import NodeResult, Status
 from strands.multiagent.graph import GraphResult
 from strands.multiagent.spec import Choice, Fixed, Inherit, Open, Preset, _append_presets
@@ -30,6 +31,7 @@ from strands.vended_tools.graph.graph import (
     _build_schema,
     _validate_edges,
 )
+from strands.vended_tools.handoff_to_user import handoff_to_user
 from tests.fixtures.mocked_model_provider import MockedModelProvider
 
 _graph_module = importlib.import_module("strands.vended_tools.graph.graph")
@@ -265,7 +267,8 @@ async def test_graph_tool_streams_events_and_returns_result(alist):
 @pytest.mark.parametrize(
     ("limits", "exp_calls"),
     [
-        ({}, [[], [], []]),
+        ({}, [[], [call(900.0)], [call(300.0)]]),
+        ({"execution_timeout": None, "node_timeout": None}, [[], [], []]),
         (
             {"max_node_executions": 5, "execution_timeout": 60.0, "node_timeout": 30.0},
             [[call(5)], [call(60.0)], [call(30.0)]],
@@ -293,6 +296,20 @@ async def test_graph_tool_rejects_node_count_out_of_bounds(node_count, alist):
 
 
 @pytest.mark.asyncio
+async def test_graph_tool_errors_name_the_nodes_parameter(alist):
+    nodes = [{"name": "a", "instructions": "x"}, {"name": "a", "instructions": "x"}]
+    with _patch(), pytest.raises(ValueError, match="Duplicate node name 'a' at index 1"):
+        await alist(graph(task="t", nodes=nodes, edges=[], tool_context=_ctx()))
+
+
+@pytest.mark.asyncio
+async def test_graph_tool_interrupt_raises_actionable_error(alist):
+    result = GraphResult(status=Status.INTERRUPTED, interrupts=[Interrupt(id="i1", name="ask_user")])
+    with _patch(result), pytest.raises(RuntimeError, match=r"requested user input \(ask_user\)"):
+        await alist(graph(task="t", nodes=_NODES, edges=_EDGES, tool_context=_ctx()))
+
+
+@pytest.mark.asyncio
 async def test_graph_tool_failed_status_raises_with_partial_output(alist):
     with _patch(_result(status=Status.FAILED, text="partial")), pytest.raises(RuntimeError) as exc:
         await alist(graph(task="t", nodes=_NODES, edges=_EDGES, tool_context=_ctx()))
@@ -316,8 +333,11 @@ async def test_graph_tool_builds_children_with_decremented_depth(stored_depth, e
 
     def builder(spec):
         specs.append(spec)
-        children.append(_builder(spec))
-        return children[-1]
+        child = _builder(spec)
+        child.tool_registry = ToolRegistry()
+        child.tool_registry.process_tools([handoff_to_user])
+        children.append(child)
+        return child
 
     state = {} if stored_depth is None else {_DEPTH_STATE_KEY: stored_depth}
     graph_tool = make_graph(builder=builder, instructions=Fixed("Locked."), max_depth=3)
@@ -328,6 +348,8 @@ async def test_graph_tool_builds_children_with_decremented_depth(stored_depth, e
     assert [(s.name, s.instructions) for s in specs] == [("a", "Locked."), ("b", "Locked.")]
     assert [c.args[0] for c in graph_builder.add_node.call_args_list] == children
     assert [child.state.get(_DEPTH_STATE_KEY) for child in children] == [exp_depth, exp_depth]
+    # A graph cannot pause for user input, so the user-handoff tool is dropped from every child.
+    assert [child.tool_registry.registry for child in children] == [{}, {}]
 
 
 @pytest.mark.asyncio
@@ -337,22 +359,57 @@ async def test_graph_tool_exhausted_depth_raises(alist):
         await alist(graph(task="t", nodes=_NODES, edges=_EDGES, tool_context=_ctx(parent)))
 
 
-def test_graph_tool_runs_real_graph_and_child_stop_does_not_halt_parent():
-    def tool_use(name, tool_input, tool_use_id):
-        return {
-            "role": "assistant",
-            "content": [{"toolUse": {"toolUseId": tool_use_id, "name": name, "input": tool_input}}],
-        }
+def _tool_use(name, tool_input, tool_use_id, text=None):
+    content = [{"text": text}] if text else []
+    content.append({"toolUse": {"toolUseId": tool_use_id, "name": name, "input": tool_input}})
+    return {"role": "assistant", "content": content}
 
+
+def _text(text):
+    return {"role": "assistant", "content": [{"text": text}]}
+
+
+def _graph_tool_result(agent):
+    blocks = [block for message in agent.messages for block in message["content"]]
+    return next(block["toolResult"] for block in blocks if "toolResult" in block)
+
+
+class _FailingModel(MockedModelProvider):
+    async def stream(self, *args, **kwargs):
+        raise RuntimeError("model exploded")
+        yield
+
+
+def test_graph_tool_runs_real_graph_and_child_stop_does_not_halt_parent():
     # Parent and children share the inherited model, so responses are consumed in call order.
     model = MockedModelProvider(
         [
-            tool_use("graph", {"task": "go", "nodes": _NODES, "edges": _EDGES}, "p1"),
-            tool_use("stop", {"message": "a done"}, "c1"),
-            {"role": "assistant", "content": [{"text": "b done"}]},
-            {"role": "assistant", "content": [{"text": "parent final"}]},
+            _tool_use("graph", {"task": "go", "nodes": _NODES, "edges": _EDGES}, "p1"),
+            _tool_use("stop", {"message": "a done"}, "c1", text="a done"),
+            _text("b done"),
+            _text("parent final"),
         ]
     )
-    tru_result = Agent(model=model, tools=[graph, stop], callback_handler=None)("start")
+    agent = Agent(model=model, tools=[graph, stop], callback_handler=None)
+    tru_result = agent("start")
+
     assert tru_result.stop_reason == "end_turn"
     assert str(tru_result).strip() == "parent final"
+    assert _graph_tool_result(agent)["content"] == [{"text": "a: a done\nb: b done"}]
+
+
+def test_graph_tool_node_failure_names_node_and_keeps_partial_output():
+    def builder(spec):
+        model = _FailingModel([]) if spec.name == "a" else MockedModelProvider([_text("b done")])
+        return Agent(model=model, system_prompt=spec.instructions, callback_handler=None)
+
+    edges = [{"from_node": "b", "to_node": "a"}]
+    parent_model = MockedModelProvider(
+        [_tool_use("graph", {"task": "go", "nodes": _NODES, "edges": edges}, "p1"), _text("parent final")]
+    )
+    agent = Agent(model=parent_model, tools=[make_graph(builder=builder)], callback_handler=None)
+    agent("start")
+
+    tru_tool_result = _graph_tool_result(agent)
+    assert tru_tool_result["status"] == "error"
+    assert "Graph node(s) a failed: model exploded. Partial output:\nb: b done" in tru_tool_result["content"][0]["text"]
