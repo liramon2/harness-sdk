@@ -12,7 +12,7 @@ import copy
 import logging
 import re
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ...agent._agent_as_tool import _INTERRUPTED_TURNS_KEY
 from ...agent.conversation_manager.compression.context_compression import find_valid_trim_point
@@ -251,11 +251,11 @@ class _SubagentTool(AgentTool):
 
     def _prepare_child(
         self, tool_use: ToolUse, raw: Mapping[str, Any], parent: Agent | None, state: _NestedInterruptState | None
-    ) -> tuple[Agent, Any] | str | ToolInterruptEvent:
+    ) -> tuple[Agent, Any] | str | ToolInterruptEvent | ToolResultEvent:
         """Resolve or resume the child agent and its prompt.
 
         Returns ``(child, prompt)`` on success, a ``str`` error message on validation failure, or the
-        child's interrupts to raise again if its stored turn could not be loaded.
+        event to yield if the child's stored turn could not be resumed.
         """
         if state is not None and state.is_resuming():
             return self._prepare_resume(tool_use, raw, parent, state)
@@ -298,37 +298,30 @@ class _SubagentTool(AgentTool):
 
     def _prepare_resume(
         self, tool_use: ToolUse, raw: Mapping[str, Any], parent: Agent | None, state: _NestedInterruptState
-    ) -> tuple[Agent, Any] | str | ToolInterruptEvent:
+    ) -> tuple[Agent, Any] | ToolInterruptEvent | ToolResultEvent:
         """Rebuild the interrupted child from the same tool input and restore its stored turn."""
         spec = self._resolve(raw)
         build = self._builder or _default_builder(parent)  # type: ignore[arg-type]
+        child: Agent | None = None
         try:
             child = build(spec)
-            state.restore(child)
         except Exception as error:
             logger.warning(
-                "tool_name=<%s>, tool_use_id=<%s> | failed to resume interrupted subagent: %s",
+                "tool_name=<%s>, tool_use_id=<%s> | failed to rebuild interrupted subagent: %s",
                 self._name,
                 tool_use["toolUseId"],
                 error,
             )
-            # Keep the turn so the answer can be applied on a later attempt.
-            pending = state.unanswer()
-            if pending:
-                return ToolInterruptEvent(tool_use, pending)
-        else:
-            state.clear()
-            if child._interrupt_state.activated:
-                return child, state.responses()
-        logger.warning(
-            "tool_name=<%s>, tool_use_id=<%s> | interrupted subagent is not available",
-            self._name,
-            tool_use["toolUseId"],
-        )
-        return (
+        resumed = state.resume(
+            child,
+            tool_use,
             "Subagent did NOT run and the response was NOT applied: its interrupted turn is not available. "
-            "Do not report the delegated task as completed; if it is still needed, delegate it again."
+            "Do not report the delegated task as completed; if it is still needed, delegate it again.",
         )
+        if not isinstance(resumed, list):
+            return resumed
+        # resume() returns an event when there is no child to resume.
+        return cast("Agent", child), resumed
 
     def _finalize_result(
         self, tool_use: ToolUse, child: Agent, result: Any, state: _NestedInterruptState | None
@@ -365,9 +358,7 @@ class _SubagentTool(AgentTool):
         try:
             prepared = self._prepare_child(tool_use, raw, parent, state)
             if not isinstance(prepared, tuple):
-                yield (
-                    prepared if isinstance(prepared, ToolInterruptEvent) else self._error_result(tool_use_id, prepared)
-                )
+                yield self._error_result(tool_use_id, prepared) if isinstance(prepared, str) else prepared
                 return
             child, prompt = prepared
 

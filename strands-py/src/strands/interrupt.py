@@ -8,10 +8,11 @@ from urllib.parse import quote
 
 if TYPE_CHECKING:
     from .agent import Agent
+    from .types._events import ToolInterruptEvent, ToolResultEvent
     from .types.agent import AgentInput
     from .types.content import Message
     from .types.interrupt import InterruptResponseContent
-    from .types.tools import ToolResult
+    from .types.tools import ToolResult, ToolUse
 
 logger = logging.getLogger(__name__)
 
@@ -287,58 +288,78 @@ class _NestedInterruptState:
         self._state._version += 1
         return [Interrupt(f"{self.prefix}{i.id}", i.name, i.reason) for i in interrupts]
 
-    def responses(self) -> list["InterruptResponseContent"]:
-        """The responses supplied on this resume for this tool call, mapped back to the nested agent's ids."""
+    def resume(
+        self, agent: "Agent | None", tool_use: "ToolUse", unavailable_message: str
+    ) -> "list[InterruptResponseContent] | ToolInterruptEvent | ToolResultEvent":
+        """Restore the stored turn, if any, and map this call's responses back to the nested agent's ids.
+
+        Args:
+            agent: The nested agent to resume, or None if it could not be built.
+            tool_use: The tool call that runs the nested agent.
+            unavailable_message: Error text for the tool result when there is no turn to resume.
+
+        Returns:
+            The responses to resume the nested agent with; otherwise the interrupts to raise again if the turn
+            could not be loaded, or an error result if there is no turn to resume.
+        """
+        # Importing here to avoid circular import
+        from .types._events import ToolResultEvent
+        from .types._snapshot import Snapshot
+
+        unavailable = ToolResultEvent(
+            {"toolUseId": tool_use["toolUseId"], "status": "error", "content": [{"text": unavailable_message}]}
+        )
+        if agent is None:
+            return self._reraise(tool_use) or unavailable
+        turns = self._state.context.get(self._key) or {}
+        turn = turns.get(self._tool_use_id)
+        try:
+            if turn is not None:
+                agent.load_snapshot(Snapshot.from_dict(turn))
+        except Exception as error:
+            logger.error(
+                "tool_use_id=<%s>, error=<%s> | failed to restore interrupted sub-agent turn", self._tool_use_id, error
+            )
+            return self._reraise(tool_use) or unavailable
+
+        if turns.pop(self._tool_use_id, None) is not None:
+            self._state._version += 1
+        if not agent._interrupt_state.activated:
+            logger.error("tool_use_id=<%s> | cannot resume: the nested agent turn is not available", self._tool_use_id)
+            return unavailable
         return [
             {
                 "interruptResponse": {
-                    "interruptId": r["interruptResponse"]["interruptId"][len(self.prefix) :],
-                    "response": r["interruptResponse"]["response"],
+                    "interruptId": response["interruptResponse"]["interruptId"][len(self.prefix) :],
+                    "response": response["interruptResponse"]["response"],
                 }
             }
-            for r in self._state.context.get(_RESPONSES_KEY) or []
-            if r["interruptResponse"]["interruptId"].startswith(self.prefix)
+            for response in self._state.context.get(_RESPONSES_KEY) or []
+            if response["interruptResponse"]["interruptId"].startswith(self.prefix)
         ]
 
-    def restore(self, agent: "Agent") -> None:
-        """Load the stored turn into ``agent``, if there is one.
-
-        Args:
-            agent: The nested agent to restore.
-
-        Raises:
-            Exception: If the stored turn cannot be loaded; it stays stored, see :meth:`unanswer`.
-        """
-        # Importing here to avoid circular import
-        from .types._snapshot import Snapshot
-
-        turn = (self._state.context.get(self._key) or {}).get(self._tool_use_id)
-        if turn is not None:
-            agent.load_snapshot(Snapshot.from_dict(turn))
-
-    def unanswer(self) -> list[Interrupt]:
-        """Mark the stored turn's still-awaited interrupts unanswered, keeping the turn stored.
+    def _reraise(self, tool_use: "ToolUse") -> "ToolInterruptEvent | None":
+        """Raise the stored turn's still-awaited interrupts again, keeping the turn for a later attempt.
 
         Returns:
-            The interrupts to raise again; empty if there is no readable stored turn.
+            The interrupts to raise again, or None if the stored turn has no readable interrupt state.
         """
-        turn = (self._state.context.get(self._key) or {}).get(self._tool_use_id) or {}
-        # Read the raw dict rather than Snapshot.from_dict, since the turn may be stored but fail validation.
+        from .types._events import ToolInterruptEvent
+
+        turn = (self._state.context.get(self._key) or {}).get(self._tool_use_id)
         try:
-            awaited = _InterruptState.from_dict(turn["data"]["interrupt_state"]).interrupts
+            # Read the raw dict rather than Snapshot.from_dict, since the turn may be stored but fail validation.
+            awaited = _InterruptState.from_dict(turn["data"]["interrupt_state"]).interrupts  # type: ignore[index]
         except Exception:
             logger.error("tool_use_id=<%s> | stored turn has no readable interrupt state", self._tool_use_id)
-            return []
+            return None
         pending = [
             interrupt
             for interrupt_id, interrupt in self._state.interrupts.items()
             if interrupt_id.startswith(self.prefix) and interrupt_id[len(self.prefix) :] in awaited
         ]
+        if not pending:
+            return None
         for interrupt in pending:
             interrupt.response = None
-        return pending
-
-    def clear(self) -> None:
-        """Drop the stored turn once the nested agent is done with it."""
-        if (self._state.context.get(self._key) or {}).pop(self._tool_use_id, None) is not None:
-            self._state._version += 1
+        return ToolInterruptEvent(tool_use, pending)
