@@ -23,7 +23,6 @@ from ...multiagent.spec import (
     Inherit,
     Open,
     Preset,
-    _append_presets,
     _default_builder,
     _resolve_specs,
     _to_schema_properties,
@@ -124,9 +123,6 @@ def make_swarm(
     if default_preset is None and presets:
         default_preset = next(iter(presets))
 
-    # Build the model-facing description with preset info.
-    tool_description = _append_presets(description, presets)
-
     input_schema = _build_schema(
         presets=presets,
         default_preset=default_preset,
@@ -151,7 +147,7 @@ def make_swarm(
     # Interrupted swarms awaiting a resume, keyed by the tool-use id that started them.
     pending: dict[str, tuple[Swarm, list[Interrupt]]] = {}
 
-    @tool(name=name, description=tool_description, inputSchema={"json": input_schema}, context="tool_context")
+    @tool(name=name, description=description, inputSchema={"json": input_schema}, context="tool_context")
     async def swarm_tool(
         task: str,
         agents: list[Mapping[str, Any]],

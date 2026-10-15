@@ -17,7 +17,7 @@ from strands.agent import AgentResult
 from strands.agent.state import AgentState
 from strands.experimental.tools import stop
 from strands.multiagent.base import NodeResult, Status
-from strands.multiagent.spec import Fixed, Open, Preset, _append_presets
+from strands.multiagent.spec import Fixed, Open, Preset
 from strands.multiagent.swarm import SwarmResult
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.tools.registry import ToolRegistry
@@ -145,7 +145,7 @@ class TestMakeSwarm:
         agents = t.tool_spec["inputSchema"]["json"]["properties"]["agents"]
         assert agents["maxItems"] == 3
         assert "Omit to use the default ('writer')." in agents["items"]["properties"]["agent_type"]["description"]
-        assert t.tool_spec["description"] == _append_presets(DEFAULT_SWARM_DESCRIPTION, presets)
+        assert t.tool_spec["description"] == DEFAULT_SWARM_DESCRIPTION
 
 
 class TestSwarmToolExecution:

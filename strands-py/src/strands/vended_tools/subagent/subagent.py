@@ -23,7 +23,6 @@ from ...multiagent.spec import (
     Inherit,
     Open,
     Preset,
-    _append_presets,
     _default_builder,
     _resolve_specs,
     _to_schema_properties,
@@ -384,7 +383,7 @@ def make_subagent(
     )
     tool_spec = {
         "name": name,
-        "description": _append_presets(description, presets),
+        "description": description,
         "inputSchema": {"json": schema},
     }
 

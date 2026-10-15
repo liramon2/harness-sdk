@@ -104,7 +104,7 @@ def test_presets_add_agent_type_parameter():
     )
     props = tool.tool_spec["inputSchema"]["json"]["properties"]
     assert props["agent_type"]["enum"] == ["generalist", "reviewer"]
-    assert "reviews diffs" in tool.tool_spec["description"]
+    assert "reviews diffs" in props["agent_type"]["description"]
     # Description names the default preset.
     assert "generalist" in props["agent_type"]["description"]
 
