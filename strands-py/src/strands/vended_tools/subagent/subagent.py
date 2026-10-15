@@ -66,7 +66,6 @@ def _build_schema(
     default_preset: str | None,
     instructions: Open | Choice | Fixed,
     tools: Choice | Fixed | Inherit | None,
-    mcp_servers: Choice | Fixed | Inherit | None,
     model: Inherit | Choice | Fixed,
     context: Fixed | Choice,
 ) -> dict[str, Any]:
@@ -82,7 +81,6 @@ def _build_schema(
             default_preset=default_preset,
             instructions=instructions,
             tools=tools,
-            mcp_servers=mcp_servers,
             model=model,
         ),
     }
@@ -342,7 +340,6 @@ def make_subagent(
     default_preset: str | None = None,
     instructions: Open | Choice | Fixed | None = None,
     tools: Choice | Fixed | Inherit | None = None,
-    mcp_servers: Choice | Fixed | Inherit | None = None,
     model: Inherit | Choice | Fixed | None = None,
     context: Fixed | Choice | None = None,
     max_depth: int = DEFAULT_SUBAGENT_MAX_DEPTH,
@@ -377,7 +374,6 @@ def make_subagent(
         default_preset=default_preset,
         instructions=instructions,
         tools=tools,
-        mcp_servers=mcp_servers,
         model=model,
         context=context,
     )
@@ -396,7 +392,6 @@ def make_subagent(
             default_preset=default_preset,
             instructions=instructions,
             tools=tools,
-            mcp_servers=mcp_servers,
             model=model,
         )[0]
 

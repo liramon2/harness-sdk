@@ -1,6 +1,9 @@
 """Tests for multiagent spec resolution: axis types, _resolve_specs, and _default_builder."""
 
+from unittest.mock import MagicMock
+
 import pytest
+from mcp.types import Tool as MCPTool
 
 from strands import Agent
 from strands.multiagent.spec import (
@@ -19,6 +22,7 @@ from strands.multiagent.spec import (
 )
 from strands.sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
 from strands.tools.decorator import tool
+from strands.tools.mcp import MCPAgentTool, MCPClient
 from tests.fixtures.mocked_model_provider import MockedModelProvider
 
 
@@ -32,7 +36,6 @@ _AXES = dict(
     default_preset=None,
     instructions=Open(),
     tools=Choice(["read", "shell"], multiple=True),
-    mcp_servers=Inherit(),
     model=Inherit(),
 )
 
@@ -66,7 +69,6 @@ def test_to_schema_properties():
         default_preset="g",
         instructions=Open(),
         tools=Choice(["a"], multiple=True),
-        mcp_servers=Inherit(),
         model=Fixed("x"),
     )
     assert props == {
@@ -79,7 +81,7 @@ def test_to_schema_properties():
         "tools": {"type": "array", "items": {"type": "string", "enum": ["a"]}, "description": d["tools"]},
     }
     # No presets → no agent_type; None axes are hidden.
-    empty = {k: None for k in ("instructions", "tools", "mcp_servers", "model")}
+    empty = {k: None for k in ("instructions", "tools", "model")}
     assert _to_schema_properties(presets={}, default_preset=None, **empty) == {}
 
 
@@ -88,8 +90,6 @@ def test_to_schema_properties():
     [
         ({"tools": Choice([])}, "offers no options"),
         ({"tools": Choice(["read", "shell"])}, "must be multiple"),
-        ({"mcp_servers": Choice([])}, "offers no options"),
-        ({"mcp_servers": Choice(["fs"])}, "must be multiple"),
         ({"instructions": Choice([])}, "offers no options"),
         ({"model": Choice([])}, "offers no options"),
     ],
@@ -246,13 +246,9 @@ def test_resolve_spec_fixed_tools_list():
 
 def test_resolve_spec_fixed_empty_list_is_not_none():
     """Fixed([]) must resolve to [] (no tools), not None (inherit all)."""
-    axes = {**_AXES, "mcp_servers": Fixed([])}
+    axes = {**_AXES, "tools": Fixed([])}
     spec = _resolve_one({"task": "x"}, **axes)
-    assert spec == AgentSpec(
-        name="a",
-        mcp_servers=[],
-        tools=["read", "shell"],
-    )
+    assert spec == AgentSpec(name="a", tools=[])
 
 
 def test_default_builder_propagates_sandbox():
@@ -289,7 +285,7 @@ def test_default_builder_skips_context_manager_for_stateful_model():
 
 
 def test_default_builder_warns_on_unknown_tools(caplog):
-    """Requesting tools or MCP servers the parent doesn't own logs a warning and skips them."""
+    """Requesting tools the parent doesn't own logs a warning and skips them."""
     import logging
 
     @tool
@@ -299,14 +295,34 @@ def test_default_builder_warns_on_unknown_tools(caplog):
 
     parent = Agent(tools=[read])
     with caplog.at_level(logging.WARNING, logger="strands.multiagent.spec"):
-        child = _default_builder(parent)(AgentSpec(tools=["read", "missing"], mcp_servers=["missing_server"]))
+        child = _default_builder(parent)(AgentSpec(tools=["read", "missing"]))
 
     assert any("missing" in r.message and "tool" in r.message for r in caplog.records)
-    assert any("missing_server" in r.message and "MCP server" in r.message for r in caplog.records)
-    # "read" was found; "missing" and "missing_server" were skipped
+    # "read" was found; "missing" was skipped
     child_tool_names = [t.tool_name for t in child.tool_registry.registry.values()]
     assert "read" in child_tool_names
     assert "missing" not in child_tool_names
+
+
+@pytest.mark.parametrize("tools,expected", [(None, ["read", "gh_issue"]), (["gh_issue"], ["gh_issue"])])
+def test_default_builder_selects_mcp_tools_by_name(tools, expected):
+    """MCP tools resolve through the tools axis like any other parent tool, sharing the parent's client."""
+
+    @tool
+    def read() -> str:
+        """Read a file."""
+        return ""
+
+    mcp_tool = MCPAgentTool(
+        MCPTool(name="gh_issue", description="Open an issue.", inputSchema={"type": "object"}),
+        MagicMock(spec=MCPClient),
+    )
+    parent = Agent(tools=[read, mcp_tool])
+    child = _default_builder(parent)(AgentSpec(tools=tools))
+
+    registry = child.tool_registry.registry
+    assert [name for name in registry if name in ("read", "gh_issue")] == expected
+    assert registry["gh_issue"] is mcp_tool
 
 
 @pytest.mark.parametrize(

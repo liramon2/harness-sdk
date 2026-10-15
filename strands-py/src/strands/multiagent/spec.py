@@ -20,8 +20,6 @@ from typing import Any
 
 from ..agent import Agent
 from ..models import Model, ModelRouter
-from ..tools.mcp import MCPClient
-from ..tools.mcp.mcp_agent_tool import MCPAgentTool
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +35,6 @@ _AXIS_DESCRIPTIONS = {
     "tools": (
         "Subset of tools to grant this agent. Fewer is safer; it cannot exceed your own. "
         "Omit to grant all inherited tools."
-    ),
-    "mcp_servers": (
-        "Subset of MCP servers whose tools to grant this agent. Fewer is safer; it cannot "
-        "exceed your own. Omit to grant all of them."
     ),
     "model": "Which model this agent runs on. Omit to inherit the parent's model.",
 }
@@ -153,7 +147,6 @@ class AgentSpec:
     agent_type: str | None = None
     instructions: str | None = None
     tools: list[str] | None = None
-    mcp_servers: list[str] | None = None
     model: Model | ModelRouter | str | None = None
 
 
@@ -178,20 +171,18 @@ def _to_schema_properties(
     default_preset: str | None,
     instructions: Axis | None,
     tools: Axis | None,
-    mcp_servers: Axis | None,
     model: Axis | None,
 ) -> dict[str, Any]:
     """Render each model-visible axis, plus an ``agent_type`` choice over ``presets``, as JSON Schema properties.
 
     Raises:
-        ValueError: If a ``Choice`` axis has no options, or a ``tools``/``mcp_servers`` ``Choice`` is not ``multiple``.
+        ValueError: If a ``Choice`` axis has no options, or a ``tools`` ``Choice`` is not ``multiple``.
     """
     agent_type = Choice([Option(n, description=_describe_preset(p)) for n, p in presets.items()]) if presets else None
     axes: dict[str, Axis | None] = {
         "agent_type": agent_type,
         "instructions": instructions,
         "tools": tools,
-        "mcp_servers": mcp_servers,
         "model": model,
     }
     props: dict[str, Any] = {}
@@ -207,7 +198,7 @@ def _to_schema_properties(
                 raise ValueError(
                     f"{key}=Choice([]) offers no options; use Fixed(...), or omit {key} to use its default."
                 )
-            if key in ("tools", "mcp_servers") and not axis.multiple:
+            if key == "tools" and not axis.multiple:
                 raise ValueError(f"{key}=Choice(...) must be multiple=True; a child agent selects a subset of {key}.")
             values = [option.name for option in options]
             lines = [f"- {option.name}: {option.description}" for option in options if option.description]
@@ -286,7 +277,6 @@ def _resolve_specs(
     default_preset: str | None,
     instructions: Open | Choice | Fixed,
     tools: Choice | Fixed | Inherit | None = None,
-    mcp_servers: Choice | Fixed | Inherit | None = None,
     model: Inherit | Choice | Fixed | None = None,
 ) -> list[AgentSpec]:
     """Combine each model-supplied agent input with the axis policies into a spec.
@@ -301,7 +291,6 @@ def _resolve_specs(
         default_preset: The preset to apply when the model omits ``agent_type``.
         instructions: Axis policy for the ``instructions`` field.
         tools: Axis policy for tool selection. Defaults to ``Inherit()`` when not supplied.
-        mcp_servers: Axis policy for MCP server selection. Defaults to ``Inherit()`` when not supplied.
         model: Axis policy for model selection. Defaults to ``Inherit()`` when not supplied.
 
     Returns:
@@ -313,8 +302,6 @@ def _resolve_specs(
     """
     if tools is None:
         tools = Inherit()
-    if mcp_servers is None:
-        mcp_servers = Inherit()
     if model is None:
         model = Inherit()
 
@@ -356,7 +343,6 @@ def _resolve_specs(
             model_input.get("instructions", _UNSET), instructions, preset.instructions if preset else None
         )
         spec.tools = _resolve_list(model_input.get("tools", _UNSET), tools, preset.tools if preset else None)
-        spec.mcp_servers = _resolve_list(model_input.get("mcp_servers", _UNSET), mcp_servers)
         spec.model = _resolve_scalar(model_input.get("model", _UNSET), model, preset.model if preset else None)
         specs.append(spec)
 
@@ -364,28 +350,20 @@ def _resolve_specs(
 
 
 def _default_builder(parent: Agent) -> AgentBuilder:
-    """A builder that creates an Agent inheriting the parent's model, tools, and MCP servers.
+    """A builder that creates an Agent inheriting the parent's model and tools.
 
     Used by the vended multi-agent tools when no custom builder is supplied.
-    Resolves ``spec.tools`` against the parent's tool registry and ``spec.mcp_servers``
-    against the parent's MCP clients (by ``client_name``). Memory tools are also
-    inherited through the tools axis.
+    Resolves ``spec.tools`` against the parent's tool registry, including MCP tools, which
+    keep calling through the parent's MCP client. Memory tools are also inherited through
+    the tools axis.
     """
 
     def build(spec: AgentSpec) -> Agent:
         parent_tools: dict[str, Any] = {}
-        mcp_clients: dict[str, MCPClient] = {}
         # The child's own context manager registers its tools; skip the parent's.
         managed_tools = {id(t) for t in parent.context_manager.tools} if parent and parent.context_manager else set()
         for tool in parent.tool_registry.registry.values() if parent else []:
-            if id(tool) in managed_tools:
-                continue
-            if isinstance(tool, MCPAgentTool):
-                # MCP tools flow through mcp_servers to avoid duplicates with their client.
-                if tool.mcp_client.client_name is not None:
-                    mcp_clients.setdefault(tool.mcp_client.client_name, tool.mcp_client)
-            else:
-                # Plain tools are selected by name via spec.tools.
+            if id(tool) not in managed_tools:
                 parent_tools[tool.tool_name] = tool
 
         # tools=None means inherit all; a list means only those.
@@ -396,19 +374,6 @@ def _default_builder(parent: Agent) -> AgentBuilder:
                     child_tools.append(parent_tools[tool_name])
                 else:
                     logger.warning("subagent requested tool %r but parent does not own it; skipping", tool_name)
-
-        # MCP servers: spec.mcp_servers=None means inherit all, a list means only those.
-        selected: Mapping[str, MCPClient]
-        if spec.mcp_servers is None:
-            selected = mcp_clients
-        else:
-            selected = {}
-            for name in spec.mcp_servers:
-                if name in mcp_clients:
-                    selected[name] = mcp_clients[name]
-                else:
-                    logger.warning("subagent requested MCP server %r but parent does not own it; skipping", name)
-        child_tools.extend(selected.values())
 
         child_model = spec.model or (parent.model if parent else None)
         return Agent(

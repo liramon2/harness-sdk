@@ -69,7 +69,6 @@ def make_swarm(
     default_preset: str | None = None,
     instructions: Open | Choice | Fixed | None = None,
     tools: Choice | Fixed | Inherit | None = None,
-    mcp_servers: Choice | Fixed | Inherit | None = None,
     model: Inherit | Choice | Fixed | None = None,
     max_agents: int = _DEFAULT_MAX_AGENTS,
     max_handoffs: int | None = None,
@@ -100,7 +99,6 @@ def make_swarm(
         default_preset: Preset used when the model omits ``agent_type``.
         instructions: Authority mode for the instructions axis.
         tools: Authority mode for the tools axis.
-        mcp_servers: Authority mode for the MCP servers axis.
         model: Authority mode for the model axis.
         max_agents: Upper bound on agents per invocation.
         max_handoffs: Maximum handoffs between agents.
@@ -128,7 +126,6 @@ def make_swarm(
         default_preset=default_preset,
         instructions=instructions,
         tools=tools,
-        mcp_servers=mcp_servers,
         model=model,
         max_agents=max_agents,
     )
@@ -175,7 +172,6 @@ def make_swarm(
                 default_preset=default_preset,
                 instructions=instructions,
                 tools=tools,
-                mcp_servers=mcp_servers,
                 model=model,
             )
             if not 1 <= len(specs) <= max_agents:
@@ -274,7 +270,6 @@ def _build_schema(
     default_preset: str | None,
     instructions: Open | Choice | Fixed,
     tools: Choice | Fixed | Inherit | None,
-    mcp_servers: Choice | Fixed | Inherit | None,
     model: Inherit | Choice | Fixed | None,
     max_agents: int,
 ) -> dict[str, Any]:
@@ -286,7 +281,6 @@ def _build_schema(
         default_preset=default_preset,
         instructions=instructions,
         tools=tools,
-        mcp_servers=mcp_servers,
         model=model,
     )
     return {

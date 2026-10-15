@@ -58,7 +58,6 @@ def test_axes_derive_expected_parameters():
         model=Choice(["fast", "deep"]),
         context=Choice([Option("none", description="fresh"), "all"]),
         tools=Choice(["read", "shell"], multiple=True),
-        mcp_servers=Choice(["fs", "api"], multiple=True),
     )
     props = tool.tool_spec["inputSchema"]["json"]["properties"]
     assert set(props) == {
@@ -68,12 +67,10 @@ def test_axes_derive_expected_parameters():
         "model",
         "context",
         "last_messages",
-        "mcp_servers",
     }
     assert props["tools"]["items"]["enum"] == ["read", "shell"]
     assert props["model"]["enum"] == ["fast", "deep"]
     assert props["instructions"]["enum"] == ["concise", "verbose"]
-    assert props["mcp_servers"]["items"]["enum"] == ["fs", "api"]
     assert props["last_messages"]["type"] == "integer"
     assert props["context"]["enum"] == ["none", "all"]
     assert props["context"]["description"].endswith("more tokens.\nOptions:\n- none: fresh")

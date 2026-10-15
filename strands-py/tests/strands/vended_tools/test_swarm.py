@@ -114,7 +114,6 @@ def test_build_schema_requires_instructions_only_without_fallback(presets, instr
         default_preset=None,
         instructions=instructions,
         tools=None,
-        mcp_servers=None,
         model=None,
         max_agents=1,
     )
