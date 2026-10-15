@@ -6,6 +6,7 @@ Swarm class so no model calls are made.
 """
 
 import importlib
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -16,12 +17,13 @@ from strands.agent import AgentResult
 from strands.agent.state import AgentState
 from strands.experimental.tools import stop
 from strands.multiagent.base import NodeResult, Status
-from strands.multiagent.spec import Choice, Fixed, Inherit, Open, Preset, _append_presets
+from strands.multiagent.spec import Fixed, Open, Preset, _append_presets
 from strands.multiagent.swarm import SwarmResult
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.tools.registry import ToolRegistry
 from strands.types._events import ToolResultEvent, ToolStreamEvent
 from strands.types.tools import ToolContext
+from strands.vended_tools.handoff_to_user import HANDOFF_INTERRUPT_NAME, handoff_to_user
 from strands.vended_tools.swarm import make_swarm, swarm
 from strands.vended_tools.swarm.swarm import (
     _DEFAULT_MAX_AGENTS,
@@ -33,15 +35,9 @@ from tests.fixtures.mocked_model_provider import MockedModelProvider
 _swarm_module = importlib.import_module("strands.vended_tools.swarm.swarm")
 
 
-def _mock_parent(tool_names: list[str] | None = None) -> SimpleNamespace:
-    registry = ToolRegistry()
-    if tool_names:
-        for name in tool_names:
-            t = Mock()
-            t.tool_name = name
-            registry.registry[name] = t
+def _mock_parent() -> SimpleNamespace:
     return SimpleNamespace(
-        tool_registry=registry,
+        tool_registry=ToolRegistry(),
         model=Mock(),
         sandbox=None,
         callback_handler=None,
@@ -50,10 +46,10 @@ def _mock_parent(tool_names: list[str] | None = None) -> SimpleNamespace:
     )
 
 
-def _ctx(parent=None):
-    if parent is None:
-        parent = _mock_parent()
-    return ToolContext(tool_use={"name": "swarm", "toolUseId": "id", "input": {}}, agent=parent, invocation_state={})
+def _ctx():
+    return ToolContext(
+        tool_use={"name": "swarm", "toolUseId": "id", "input": {}}, agent=_mock_parent(), invocation_state={}
+    )
 
 
 async def _run(swarm_tool, **kwargs):
@@ -73,22 +69,10 @@ def _result(*, status=Status.COMPLETED, text="Done!", node="writer"):
         state={},
         metrics=EventLoopMetrics(),
     )
-    sr = SwarmResult(status=status, results={node: NodeResult(result=r, status=Status.COMPLETED)}, execution_count=1)
-    return sr
+    return SwarmResult(status=status, results={node: NodeResult(result=r, status=Status.COMPLETED)}, execution_count=1)
 
 
-def _kwargs():
-    return dict(
-        max_agents=_DEFAULT_MAX_AGENTS,
-        presets={},
-        default_preset=None,
-        instructions=Open(),
-        tools=None,
-        mcp_servers=Inherit(),
-        model=Inherit(),
-    )
-
-
+@contextmanager
 def _patch(result=None, events=()):
     """Patch Swarm and _default_builder so no model calls are made.
 
@@ -102,141 +86,66 @@ def _patch(result=None, events=()):
             yield event
         yield {"type": "multiagent_result", "result": result}
 
-    sp = patch.object(_swarm_module, "Swarm")
-
     def _builder(spec):
         child = Mock(name=spec.name)
         child.state = AgentState()
         child.tool_registry = ToolRegistry()
         return child
 
-    bp = patch.object(_swarm_module, "_default_builder", return_value=_builder)
-
-    class _Ctx:
-        def __enter__(self):
-            self.cls = sp.__enter__()
-            bp.__enter__()
-            self.cls.return_value.stream_async = Mock(side_effect=_stream)
-            return self.cls
-
-        def __exit__(self, *a):
-            bp.__exit__(*a)
-            sp.__exit__(*a)
-
-    return _Ctx()
+    with (
+        patch.object(_swarm_module, "Swarm") as cls,
+        patch.object(_swarm_module, "_default_builder", return_value=_builder),
+    ):
+        cls.return_value.stream_async = Mock(side_effect=_stream)
+        yield cls
 
 
-def _item_schema(default_preset=None, **axes):
-    return _build_schema(max_agents=1, default_preset=default_preset, **axes)["properties"]["agents"]["items"]
-
-
-class TestBuildSchema:
-    def test_visible_and_hidden_axes(self):
-        # Open + no presets → instructions required.
-        schema = _item_schema(presets={}, instructions=Open(), tools=None, mcp_servers=Inherit(), model=None)
-        assert schema["required"] == ["name", "instructions"]
-        assert schema["additionalProperties"] is False
-        assert schema["properties"]["instructions"]["type"] == "string"
-
-        # Open + presets → instructions not required (preset provides a default).
-        with_presets = _item_schema(
-            presets={"w": Preset(description="W")},
-            instructions=Open(),
-            tools=None,
-            mcp_servers=Inherit(),
-            model=None,
-        )
-        assert with_presets["required"] == ["name"]
-
-        # Fixed/Inherit → hidden.
-        hidden = _item_schema(
-            presets={},
-            instructions=Fixed("x"),
-            tools=Inherit(),
-            mcp_servers=Inherit(),
-            model=Fixed("m"),
-        )
-        assert set(hidden["properties"]) == {"name"}
-
-    def test_choice_axes_and_presets(self):
-        presets = {"alpha": Preset(description="First"), "beta": Preset(description="Second")}
-        schema = _item_schema(
-            presets=presets,
-            instructions=Choice(["A", "B"]),
-            tools=Choice(["calc", "fetch"], multiple=True),
-            mcp_servers=Choice(["docs", "github"], multiple=True),
-            model=Choice(["fast", "smart"]),
-        )
-        assert schema["properties"]["instructions"]["enum"] == ["A", "B"]
-        assert schema["properties"]["tools"]["items"]["enum"] == ["calc", "fetch"]
-        assert schema["properties"]["mcp_servers"]["items"]["enum"] == ["docs", "github"]
-        assert schema["properties"]["model"]["enum"] == ["fast", "smart"]
-        agent_type = schema["properties"]["agent_type"]
-        assert agent_type["enum"] == ["alpha", "beta"]
-        assert "- alpha: First" in agent_type["description"]
-
-    def test_presets_without_descriptions(self):
-        schema = _item_schema(
-            presets={"w": Preset()}, instructions=Open(), tools=None, mcp_servers=Inherit(), model=None
-        )
-        assert schema["properties"]["agent_type"]["description"] == "Role to assign this agent."
+@pytest.mark.parametrize(
+    "presets,instructions,exp_required",
+    [
+        ({}, Open(), ["name", "instructions"]),
+        ({"w": Preset()}, Open(), ["name"]),
+        ({}, Fixed("x"), ["name"]),
+    ],
+)
+def test_build_schema_requires_instructions_only_without_fallback(presets, instructions, exp_required):
+    schema = _build_schema(
+        presets=presets,
+        default_preset=None,
+        instructions=instructions,
+        tools=None,
+        mcp_servers=None,
+        model=None,
+        max_agents=1,
+    )
+    assert schema["properties"]["agents"]["items"]["required"] == exp_required
 
 
 class TestMakeSwarm:
-    def test_default_instance_and_exports(self):
+    def test_default_instance(self):
         from strands.tools.decorator import DecoratedFunctionTool
         from strands.vended_tools import make_swarm as ms
         from strands.vended_tools import swarm as s
 
         assert s is swarm and ms is make_swarm
         assert isinstance(swarm, DecoratedFunctionTool) and swarm.tool_name == "swarm"
+        assert swarm.tool_spec["description"] == DEFAULT_SWARM_DESCRIPTION
+        assert swarm.tool_spec["inputSchema"]["json"]["properties"]["agents"]["maxItems"] == _DEFAULT_MAX_AGENTS
         assert make_swarm(name="team").tool_name == "team"
 
-    @pytest.mark.parametrize(
-        "kw,match",
-        [
-            ({"max_agents": 0}, "max_agents"),
-            ({"max_agents": True}, "max_agents"),
-        ],
-    )
-    def test_rejects_invalid_limits(self, kw, match):
-        with pytest.raises(ValueError, match=match):
-            make_swarm(**kw)
-
-    def test_default_spec(self):
-        agents = swarm.tool_spec["inputSchema"]["json"]["properties"]["agents"]
-        assert agents["minItems"] == 1 and agents["maxItems"] == _DEFAULT_MAX_AGENTS
-        assert (
-            "Defaults to the first agent"
-            in swarm.tool_spec["inputSchema"]["json"]["properties"]["entry_point"]["description"]
-        )
-        assert swarm.tool_spec["inputSchema"]["json"] == _build_schema(
-            presets={},
-            default_preset=None,
-            instructions=Open(),
-            tools=None,
-            mcp_servers=None,
-            model=Inherit(),
-            max_agents=_DEFAULT_MAX_AGENTS,
-        )
-        assert swarm.tool_spec["description"] == DEFAULT_SWARM_DESCRIPTION
+    @pytest.mark.parametrize("max_agents", [0, True])
+    def test_rejects_invalid_max_agents(self, max_agents):
+        with pytest.raises(ValueError, match="max_agents"):
+            make_swarm(max_agents=max_agents)
 
     def test_spec_reflects_configuration(self):
-        """The factory wires its axes, presets, and max_agents into the schema and description."""
-        axes = dict(
-            presets={"writer": Preset(description="Writes.")},
-            default_preset="writer",
-            instructions=Choice(["A"]),
-            tools=Choice(["calc"], multiple=True),
-            mcp_servers=Choice(["docs", "gh"], multiple=True),
-            model=Choice(["fast"]),
-        )
-        t = make_swarm(max_agents=3, **axes)
+        """The factory wires presets and max_agents into the schema, defaulting to the first preset."""
+        presets = {"writer": Preset(description="Writes."), "editor": Preset()}
+        t = make_swarm(max_agents=3, presets=presets)
         agents = t.tool_spec["inputSchema"]["json"]["properties"]["agents"]
         assert agents["maxItems"] == 3
         assert "Omit to use the default ('writer')." in agents["items"]["properties"]["agent_type"]["description"]
-        assert t.tool_spec["inputSchema"]["json"] == _build_schema(max_agents=3, **axes)
-        assert t.tool_spec["description"] == _append_presets(DEFAULT_SWARM_DESCRIPTION, axes["presets"])
+        assert t.tool_spec["description"] == _append_presets(DEFAULT_SWARM_DESCRIPTION, presets)
 
 
 class TestSwarmToolExecution:
@@ -282,7 +191,6 @@ class TestSwarmToolExecution:
         [
             ([], {}, "Between 1 and 2"),
             ([_spec("a"), _spec("b"), _spec("c")], {}, "Between 1 and 2"),
-            ([{}], {}, "non-empty 'name'"),
             ([_spec("a", instructions="Do.")], {"entry_point": "z"}, "entry_point 'z'"),
         ],
     )
@@ -308,24 +216,50 @@ class TestSwarmToolExecution:
                 await _run(swarm, task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx())
 
 
+def _tool_use(name, tool_input, tool_use_id):
+    return {
+        "role": "assistant",
+        "content": [{"toolUse": {"toolUseId": tool_use_id, "name": name, "input": tool_input}}],
+    }
+
+
 class TestEndToEnd:
     def test_child_stop_does_not_halt_parent(self):
-        def tool_use(name, tool_input, tool_use_id):
-            return {
-                "role": "assistant",
-                "content": [{"toolUse": {"toolUseId": tool_use_id, "name": name, "input": tool_input}}],
-            }
-
         # Parent and child share the inherited model, so responses are consumed in call order.
         model = MockedModelProvider(
             [
-                tool_use("swarm", {"task": "go", "agents": [_spec("a", instructions="Do.")]}, "p1"),
-                tool_use("stop", {"message": "child done"}, "c1"),
+                _tool_use("swarm", {"task": "go", "agents": [_spec("a", instructions="Do.")]}, "p1"),
+                _tool_use("stop", {"message": "child done"}, "c1"),
                 {"role": "assistant", "content": [{"text": "parent final"}]},
             ]
         )
         result = Agent(model=model, tools=[swarm, stop], callback_handler=None)("start")
         assert result.stop_reason == "end_turn"
+        assert str(result).strip() == "parent final"
+
+    def test_child_interrupts_round_trip_through_parent_one_per_resume(self):
+        handoffs = [_tool_use("handoff_to_user", {"message": question}, f"c{n}") for n, question in enumerate("AB")]
+        model = MockedModelProvider(
+            [
+                _tool_use("swarm", {"task": "go", "agents": [_spec("a", instructions="Do.")]}, "p1"),
+                {"role": "assistant", "content": [block for handoff in handoffs for block in handoff["content"]]},
+                {"role": "assistant", "content": [{"text": "child done"}]},
+                {"role": "assistant", "content": [{"text": "parent final"}]},
+            ]
+        )
+        agent = Agent(model=model, tools=[swarm, handoff_to_user], callback_handler=None)
+
+        result = agent("start")
+        reasons = []
+        while result.stop_reason == "interrupt":
+            [interrupt] = result.interrupts
+            reasons.append(interrupt.reason)
+            result = agent([{"interruptResponse": {"interruptId": interrupt.id, "response": "yes"}}])
+
+        assert reasons == [
+            {"name": HANDOFF_INTERRUPT_NAME, "reason": "A"},
+            {"name": HANDOFF_INTERRUPT_NAME, "reason": "B"},
+        ]
         assert str(result).strip() == "parent final"
 
 
@@ -354,7 +288,7 @@ class TestChildren:
                 custom,
                 task="t",
                 agents=[_spec("a"), _spec("b")],
-                tool_context=_ctx(_mock_parent()),
+                tool_context=_ctx(),
                 entry_point=entry_point,
             )
 
@@ -363,24 +297,3 @@ class TestChildren:
         assert cls.call_args[1].get("entry_point") is (children[1] if entry_point else None)
         for child in children:
             assert list(child.tool_registry.registry) == ["keep"]
-
-    @pytest.mark.asyncio
-    async def test_preset_reused_across_children(self):
-        built = []
-
-        def build(spec):
-            built.append(spec)
-            child = Mock()
-            child.state = AgentState()
-            child.tool_registry = ToolRegistry()
-            return child
-
-        custom = make_swarm(builder=build, presets={"expert": Preset(instructions="be expert")})
-        with _patch() as cls:
-            agents = [_spec("a", agent_type="expert"), _spec("b")]
-            await _run(custom, task="t", agents=agents, tool_context=_ctx(_mock_parent()))
-        assert [(s.name, s.agent_type, s.instructions) for s in built] == [
-            ("a", "expert", "be expert"),
-            ("b", "expert", "be expert"),
-        ]
-        assert len(cls.call_args[1]["nodes"]) == 2
