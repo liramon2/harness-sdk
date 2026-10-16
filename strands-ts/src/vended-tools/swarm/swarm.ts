@@ -30,7 +30,13 @@ import { tool } from '../../tools/tool-factory.js'
 import type { InvokableTool, Tool, ToolContext } from '../../tools/tool.js'
 import { InterruptResponseContent } from '../../types/interrupt.js'
 import type { JSONSchema, JSONValue } from '../../types/json.js'
-import { DEFAULT_SWARM_DESCRIPTION, DEFAULT_SWARM_MAX_AGENTS } from './types.js'
+import {
+  DEFAULT_SWARM_DESCRIPTION,
+  DEFAULT_SWARM_MAX_AGENTS,
+  DEFAULT_SWARM_MAX_STEPS,
+  DEFAULT_SWARM_NODE_TIMEOUT,
+  DEFAULT_SWARM_TIMEOUT,
+} from './types.js'
 import type { SwarmInput } from './types.js'
 
 /** Interrupted swarms awaiting a resume, keyed by the tool-use id that started them. */
@@ -39,7 +45,7 @@ type PendingSwarms = Map<string, { swarm: Swarm; interrupts: Interrupt[] }>
 /** Every swarm tool created, so children lose all of them regardless of name or instance. */
 const SWARM_TOOLS = new WeakSet<Tool>()
 
-/** Options for {@link makeSwarm}. Unset {@link SwarmConfig} limits fall back to the {@link Swarm} defaults. */
+/** Options for {@link makeSwarm}. Unset repetitive-handoff limits fall back to the {@link Swarm} defaults. */
 export interface MakeSwarmOptions extends SwarmConfig {
   /** Turns a resolved spec into an agent. Defaults to a builder that inherits from the parent. */
   builder?: AgentBuilder
@@ -55,6 +61,12 @@ export interface MakeSwarmOptions extends SwarmConfig {
   model?: Inherit | Choice | Fixed
   /** Upper bound on agents per call. Must be a positive integer. @defaultValue {@link DEFAULT_SWARM_MAX_AGENTS} */
   maxAgents?: number
+  /** Max total agent executions. Pass `Infinity` for no limit. @defaultValue {@link DEFAULT_SWARM_MAX_STEPS} */
+  maxSteps?: number
+  /** Wall-clock ceiling for the whole swarm, in milliseconds. @defaultValue {@link DEFAULT_SWARM_TIMEOUT} */
+  timeout?: number
+  /** Per-agent wall-clock ceiling, in milliseconds. @defaultValue {@link DEFAULT_SWARM_NODE_TIMEOUT} */
+  nodeTimeout?: number
   /** Tool name exposed to the model. @defaultValue `'swarm'` */
   name?: string
   /** Tool description shown to the model. @defaultValue {@link DEFAULT_SWARM_DESCRIPTION} */
@@ -93,9 +105,12 @@ export function makeSwarm({
   tools,
   model,
   maxAgents = DEFAULT_SWARM_MAX_AGENTS,
+  maxSteps = DEFAULT_SWARM_MAX_STEPS,
+  timeout = DEFAULT_SWARM_TIMEOUT,
+  nodeTimeout = DEFAULT_SWARM_NODE_TIMEOUT,
   name = 'swarm',
   description = DEFAULT_SWARM_DESCRIPTION,
-  ...limits
+  ...handoffLimits
 }: MakeSwarmOptions = {}): InvokableTool<SwarmInput, JSONValue> {
   if (!name) {
     throw new Error('name must be a non-empty string.')
@@ -111,6 +126,7 @@ export function makeSwarm({
   }
 
   const axes: ResolveSpecAxes = { presets, defaultPreset, instructions, tools, model }
+  const limits: SwarmConfig = { maxSteps, timeout, nodeTimeout, ...handoffLimits }
   const pending: PendingSwarms = new Map()
 
   const swarmTool = tool({

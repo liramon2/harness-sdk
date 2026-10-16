@@ -164,16 +164,21 @@ describe('swarm tool', () => {
         /^Error: Swarm stopped before completing \(max_steps=<1> \| swarm reached step limit\)\. Partial output:\na: to b$/,
       ],
       [
+        'the default step limit',
+        {},
+        /^Error: Swarm stopped before completing \(max_steps=<20> \| swarm reached step limit\)\. Partial output:\na: to b\nb: to a$/,
+      ],
+      [
         'repetitive handoff detection',
         { repetitiveHandoffDetectionWindow: 3, repetitiveHandoffMinUniqueAgents: 3 },
         /^Error: Swarm stopped before completing \(status=FAILED: Repetitive handoff.*\)\. Partial output:\na: to b\nb: to a$/,
       ],
-    ])('forwards %s to the swarm', async (_, limits, message) => {
+    ])('applies %s to the swarm', async (_, limits, message) => {
       // a and b hand off to each other indefinitely; c never runs.
       const builder = (spec: AgentSpec): Agent => {
         const target = spec.name === 'a' ? 'b' : 'a'
         const handoff = { agentId: target, message: `to ${target}` }
-        return new Agent({ model: handoffModel(handoff, handoff, handoff), printer: false, id: spec.name! })
+        return new Agent({ model: handoffModel(...Array(10).fill(handoff)), printer: false, id: spec.name! })
       }
       const tool = makeSwarm({ builder, instructions: new Fixed('x'), ...limits })
       const { result } = await run(tool, { task: 't', agents: [{ name: 'a' }, { name: 'b' }, { name: 'c' }] })

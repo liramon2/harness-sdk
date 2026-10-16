@@ -42,7 +42,7 @@ const agent = new Agent({ tools: [team, httpRequest, webFetch] })
 
 ### `swarm`
 
-The default tool, produced by `makeSwarm()`: no presets, free-form `instructions`, inherited tools and model, and the `Swarm` default limits.
+The default tool, produced by `makeSwarm()`: no presets, free-form `instructions`, inherited tools and model, and bounded limits: 20 agent executions, a 15-minute swarm timeout, and a 5-minute per-agent timeout. Repetitive-handoff detection is off. Pass `Infinity` to `makeSwarm` to lift a limit.
 
 ### `makeSwarm(options?)`
 
@@ -55,9 +55,9 @@ The default tool, produced by `makeSwarm()`: no presets, free-form `instructions
 | `tools`                            | `Choice \| Fixed \| Inherit` | `new Inherit()`             | Policy for each agent's tools. A `Choice` must be `multiple`.               |
 | `model`                            | `Inherit \| Choice \| Fixed` | `new Inherit()`             | Policy for each agent's model.                                              |
 | `maxAgents`                        | `number`                     | `20`                        | Upper bound on agents per call. Must be a positive integer.                 |
-| `maxSteps`                         | `number`                     | `Swarm` default             | Max total agent executions.                                                 |
-| `timeout`                          | `number`                     | `Swarm` default             | Wall-clock ceiling for the whole swarm, in milliseconds.                    |
-| `nodeTimeout`                      | `number`                     | `Swarm` default             | Per-agent wall-clock ceiling, in milliseconds.                              |
+| `maxSteps`                         | `number`                     | `20`                        | Max total agent executions.                                                 |
+| `timeout`                          | `number`                     | `900_000`                   | Wall-clock ceiling for the whole swarm, in milliseconds.                    |
+| `nodeTimeout`                      | `number`                     | `300_000`                   | Per-agent wall-clock ceiling, in milliseconds.                              |
 | `repetitiveHandoffDetectionWindow` | `number`                     | `Swarm` default             | Window size for repetitive-handoff detection.                               |
 | `repetitiveHandoffMinUniqueAgents` | `number`                     | `Swarm` default             | Minimum unique agents required in the window.                               |
 | `name`                             | `string`                     | `swarm`                     | Tool name.                                                                  |

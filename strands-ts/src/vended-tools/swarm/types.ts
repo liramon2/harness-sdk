@@ -16,6 +16,21 @@ export const DEFAULT_SWARM_DESCRIPTION =
 export const DEFAULT_SWARM_MAX_AGENTS = 20
 
 /**
+ * Default cap on total agent executions per swarm invocation.
+ */
+export const DEFAULT_SWARM_MAX_STEPS = 20
+
+/**
+ * Default wall-clock ceiling for a swarm invocation, in milliseconds.
+ */
+export const DEFAULT_SWARM_TIMEOUT = 900_000
+
+/**
+ * Default wall-clock ceiling for each agent in a swarm, in milliseconds.
+ */
+export const DEFAULT_SWARM_NODE_TIMEOUT = 300_000
+
+/**
  * One agent in a {@link SwarmInput}. Only `name` is always present; the other parameters appear in the schema
  * depending on the axis policies passed to `makeSwarm`.
  */
