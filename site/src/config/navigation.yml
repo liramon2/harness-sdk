@@ -36,6 +36,7 @@ navbar:
     href: /docs/user-guide/sdk/
     basePath:
       - /docs/user-guide/sdk/
+      - /docs/user-guide/build-with-ai/
       # The "choosing a foundation" decision and the migration guides live with
       # the Strands Harness SDK — they compare and migrate onto the Strands Harness SDK.
       - /docs/user-guide/migrate/
@@ -235,13 +236,13 @@ sidebar:
             slug: docs/user-guide/sdk/quickstart/python
           - label: "Quickstart"
             slug: docs/user-guide/sdk/quickstart/typescript
+          - docs/user-guide/build-with-ai
       - label: Migrate
         items:
           - label: "Choosing an agent foundation"
             slug: docs/user-guide/migrate/choosing-an-agent-foundation
-          # Draft — hidden until the LangGraph migration guide is ready to publish.
-          # - label: "Migrate from LangGraph"
-          #   slug: docs/user-guide/migrate/langgraph
+          - label: "Migrate from LangGraph"
+            slug: docs/user-guide/migrate/langgraph
           - label: "Migrate from OpenAI"
             slug: docs/user-guide/migrate/openai
       - label: Build guides
@@ -328,8 +329,11 @@ sidebar:
             slug: docs/user-guide/sdk/agents/lifecycle-controls
           - label: "State"
             slug: docs/user-guide/sdk/agents/state
-          - label: "Storage"
-            slug: docs/user-guide/sdk/storage
+          - label: Storage
+            items:
+              - label: "Overview"
+                slug: docs/user-guide/sdk/storage
+              - docs/user-guide/sdk/storage/search-strategies
           - label: "Snapshots"
             slug: docs/user-guide/sdk/agents/snapshots
           - label: "Prompts"
@@ -338,8 +342,6 @@ sidebar:
             slug: docs/user-guide/sdk/agents/hooks
           - label: "Hook events"
             slug: docs/user-guide/sdk/agents/hooks-events
-          - label: "Conversation management"
-            slug: docs/user-guide/sdk/agents/conversation-management
           - label: Context management
             items:
               - label: "Overview"
@@ -447,6 +449,8 @@ sidebar:
               - docs/user-guide/sdk/bidi/session-management
               - docs/user-guide/sdk/bidi/interrupts
               - docs/user-guide/sdk/bidi/observability
+          - label: "Conversation management"
+            slug: docs/user-guide/sdk/agents/conversation-management
           - label: Experimental
             items:
               - docs/user-guide/sdk/experimental/agent-config
