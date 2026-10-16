@@ -153,7 +153,7 @@ export interface TracerConfig {
 
   /**
    * Stamp OTel baggage entries onto spans as attributes: `true` for every key, or predicate(s) selecting keys.
-   * Requires the optional `@opentelemetry/baggage-span-processor` peer dependency in a Node.js runtime.
+   * Requires the optional `@opentelemetry/baggage-span-processor` package on Node.js, otherwise `setupTracer` throws.
    * Ignored when `provider` is passed; add a `BaggageSpanProcessor` to that provider yourself.
    */
   baggageProcessor?: boolean | BaggageKeyPredicates
