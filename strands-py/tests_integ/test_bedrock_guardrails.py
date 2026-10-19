@@ -239,7 +239,7 @@ def test_guardrail_input_intervention(boto_session, bedrock_guardrail, guardrail
 @pytest.mark.parametrize("processing_mode", ["sync", "async"])
 def test_guardrail_output_intervention(boto_session, bedrock_guardrail, processing_mode):
     bedrock_model = BedrockModel(
-        model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
+        model_id="global.anthropic.claude-sonnet-4-6",
         guardrail_id=bedrock_guardrail,
         guardrail_version="DRAFT",
         guardrail_redact_output=False,
