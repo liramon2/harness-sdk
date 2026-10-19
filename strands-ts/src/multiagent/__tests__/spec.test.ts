@@ -55,23 +55,6 @@ describe('Choice', () => {
     })
   })
 
-  describe('toSchemaProperty', () => {
-    afterEach(() => {
-      vi.restoreAllMocks()
-    })
-
-    it('is deprecated', () => {
-      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-      const prop = new Choice([new Option('a', UNSET, 'A.')], true).toSchemaProperty('Pick.')
-      expect(prop).toEqual({
-        type: 'array',
-        items: { type: 'string', enum: ['a'] },
-        description: 'Pick.\nOptions:\n- a: A.',
-      })
-      expect(warn).toHaveBeenCalledWith('Choice.toSchemaProperty is deprecated and will be removed in a future release')
-    })
-  })
-
   describe('valueFor', () => {
     it('returns mapped value for known option and passthrough for unknown', () => {
       const c = new Choice([new Option('alias', 'real')])

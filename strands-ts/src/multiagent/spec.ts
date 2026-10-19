@@ -16,7 +16,6 @@ import type { ModelRouter } from '../models/routing/router.js'
 import { Agent } from '../agent/agent.js'
 import type { Tool } from '../tools/tool.js'
 import { logger } from '../logging/logger.js'
-import { warnOnce } from '../logging/warn-once.js'
 import type { Sandbox } from '../sandbox/base.js'
 import type { Printer } from '../agent/printer.js'
 import type { Tracer } from '../telemetry/tracer.js'
@@ -123,34 +122,6 @@ export class Choice {
   }
 
   /**
-   * Renders this axis as a JSON Schema property for a tool's `inputSchema`.
-   *
-   * @deprecated Will be removed in a future release; there is no public replacement.
-   * @param description - Base description prepended before any per-option detail.
-   * @returns A JSON Schema property object.
-   */
-  toSchemaProperty(description: string = ''): Record<string, unknown> {
-    warnOnce(logger, 'Choice.toSchemaProperty is deprecated and will be removed in a future release')
-    const options = this.normalized()
-    const values = options.map((option) => option.name)
-    const lines = options
-      .filter((option) => option.description)
-      .map((option) => `- ${option.name}: ${option.description}`)
-    let desc = description
-    if (lines.length > 0) {
-      const block = 'Options:\n' + lines.join('\n')
-      desc = description ? `${description}\n${block}` : block
-    }
-    const prop: Record<string, unknown> = this.multiple
-      ? { type: 'array', items: { type: 'string', enum: values } }
-      : { type: 'string', enum: values }
-    if (desc) {
-      prop['description'] = desc
-    }
-    return prop
-  }
-
-  /**
    * Returns the resolved value behind `name`, or `name` itself if unknown (passthrough).
    *
    * @param name - The option name selected by the model.
@@ -220,7 +191,10 @@ export class AgentSpec {
   }
 }
 
-/** Axes passed to {@link _toSchemaProperties}; omitted axes are hidden from the model. */
+/**
+ * Axes passed to {@link _toSchemaProperties}; omitted axes are hidden from the model.
+ * @internal Not part of the public API.
+ */
 export interface SchemaAxes {
   presets: Record<string, Preset>
   defaultPreset: string | undefined
@@ -377,7 +351,10 @@ function resolveList(
   return undefined
 }
 
-/** Axes passed to {@link _resolveSpecs}. */
+/**
+ * Axes passed to {@link _resolveSpecs}.
+ * @internal Not part of the public API.
+ */
 export interface ResolveSpecAxes {
   presets: Record<string, Preset>
   defaultPreset: string | undefined
