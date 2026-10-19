@@ -432,18 +432,17 @@ def test_guardrail_latest_message(boto_session, bedrock_guardrail, yellow_img):
         messages=[
             {"role": "user", "content": [{"text": "First message"}]},
             {"role": "assistant", "content": [{"text": "Hello!"}]},
-            {
-                "role": "user",
-                "content": [
-                    {"text": "CACTUS"},
-                    {"image": {"format": "png", "source": {"bytes": yellow_img}}},
-                ],
-            },
         ],
     )
 
-    response = agent2("What do you see?")
+    response = agent2(
+        [
+            {"text": "CACTUS"},
+            {"image": {"format": "png", "source": {"bytes": yellow_img}}},
+        ]
+    )
     assert response.stop_reason == "guardrail_intervened"
+    assert str(response).strip() == BLOCKED_INPUT
 
 
 def test_guardrail_input_intervention_properly_redacts_in_session(boto_session, bedrock_guardrail, temp_dir):
