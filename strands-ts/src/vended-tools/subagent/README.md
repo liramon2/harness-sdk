@@ -39,7 +39,7 @@ const agent = new Agent({ tools: [subagent] })
 
 ### `subagent`
 
-The default tool, produced by `makeSubagent()`: the `generalist` preset, free-form `instructions`, inherited tools (including MCP tools) and model, and no shared context.
+The default tool, produced by `makeSubagent()`: the `generalist` preset, free-form `instructions`, inherited tools and model, and no shared context.
 
 ### `makeSubagent(options?)`
 
