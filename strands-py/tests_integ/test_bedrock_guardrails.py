@@ -249,7 +249,7 @@ def test_guardrail_output_intervention(boto_session, bedrock_guardrail, processi
 
     agent = Agent(
         model=bedrock_model,
-        system_prompt="When asked to say the word, say CACTUS.",
+        system_prompt="When the user asks you to say the word, reply with only CACTUS. Otherwise, do not mention it.",
         callback_handler=None,
         load_tools_from_directory=False,
     )
