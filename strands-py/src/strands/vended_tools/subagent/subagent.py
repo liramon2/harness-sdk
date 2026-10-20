@@ -15,6 +15,10 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from ...agent.conversation_manager.compression.context_compression import find_valid_trim_point
+from ...multiagent._tool_streamer import (
+    _AgentToolAdapter,
+    _ToolStreamer,
+)
 from ...multiagent.spec import (
     AgentBuilder,
     AgentSpec,
@@ -26,10 +30,6 @@ from ...multiagent.spec import (
     _default_builder,
     _resolve_specs,
     _to_schema_properties,
-)
-from ...tools._tool_streamer import (
-    _AgentToolAdapter,
-    _ToolStreamer,
 )
 from ...tools.tools import AgentTool
 from ...types._events import ToolInterruptEvent, ToolResultEvent, ToolStreamEvent

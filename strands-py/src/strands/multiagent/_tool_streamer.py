@@ -18,10 +18,11 @@ from ..interrupt import Interrupt, _InterruptState
 from ..types._events import ToolInterruptEvent, ToolResultEvent
 from ..types._snapshot import Snapshot
 from ..types.tools import ToolResultContent, ToolUse
+from ._snapshot import load_snapshot, take_snapshot
+from .base import MultiAgentBase, Status
 
 if TYPE_CHECKING:
     from ..agent.agent import Agent
-    from ..multiagent.base import MultiAgentBase
     from ..types.interrupt import InterruptResponseContent
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ _INTERRUPTED_TURNS_KEY = "sub_agent_interrupted_turns"
 
 
 class _ToolAdapter(Protocol):
-    """Provides persistence and result handling that differs between tool agent types."""
+    """Provides persistence, interrupt, and result handling that differs between agent types in tool calls."""
 
     label: str
     """Model-facing name of the child, used in terminal error messages."""
@@ -54,7 +55,7 @@ class _ToolAdapter(Protocol):
 
 
 class _AgentToolAdapter:
-    """Provide Agent-specific operations to a tool streamer."""
+    """Adapts an agent child to the tool streamer interface."""
 
     def __init__(self, *, label: str) -> None:
         self.label = label
@@ -79,28 +80,22 @@ class _AgentToolAdapter:
 
 
 class _MultiAgentToolAdapter:
-    """Provide MultiAgentBase-specific operations to a tool streamer."""
+    """Adapts a multi-agent child to the tool streamer interface."""
 
     def __init__(self, *, label: str) -> None:
         self.label = label
 
     def take_snapshot(self, child: MultiAgentBase) -> Snapshot:
-        from ..multiagent._snapshot import take_snapshot
-
         return take_snapshot(child)
 
     def restore(self, child: MultiAgentBase, snapshot: Snapshot | None) -> bool:
         if snapshot is not None:
-            from ..multiagent._snapshot import load_snapshot
-
             load_snapshot(child, snapshot)
         interrupt_state = cast(_InterruptState, cast(Any, child)._interrupt_state)
         return interrupt_state.activated
 
     def classify(self, child: MultiAgentBase, result: Any) -> list[Interrupt] | str | None:
         """Classify a MultiAgentResult."""
-        from ..multiagent.base import Status
-
         if result.status is Status.INTERRUPTED and result.interrupts:
             return list(result.interrupts)
         if result.status is not Status.COMPLETED:

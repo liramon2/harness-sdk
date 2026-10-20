@@ -9,9 +9,9 @@ import strands
 from strands.agent.agent import Agent
 from strands.agent.state import AgentState
 from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
+from strands.multiagent._tool_streamer import _INTERRUPTED_TURNS_KEY
 from strands.multiagent.spec import Choice, Fixed, Inherit, Option, Preset
 from strands.session.file_session_manager import FileSessionManager
-from strands.tools._tool_streamer import _INTERRUPTED_TURNS_KEY
 from strands.vended_tools.subagent import make_subagent
 from strands.vended_tools.subagent.subagent import _CONTEXT_PREAMBLE, _DEPTH_STATE_KEY
 from strands.vended_tools.subagent.types import GENERALIST

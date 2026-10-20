@@ -15,10 +15,6 @@ from typing_extensions import override
 
 from ..agent.state import AgentState
 from ..interrupt import _InterruptState
-from ..tools._tool_streamer import (
-    _AgentToolAdapter,
-    _ToolStreamer,
-)
 from ..types._events import AgentAsToolStreamEvent, ToolInterruptEvent, ToolResultEvent
 from ..types.content import Messages
 from ..types.tools import AgentTool, ToolGenerator, ToolResultContent, ToolSpec, ToolUse
@@ -180,6 +176,9 @@ class _AgentAsTool(AgentTool):
             AgentAsToolStreamEvent for intermediate events, ToolInterruptEvent if the
             sub-agent is interrupted, or ToolResultEvent with the final response.
         """
+        # Imported here: strands.multiagent imports strands.agent, which imports this module.
+        from ..multiagent._tool_streamer import _AgentToolAdapter, _ToolStreamer
+
         tool_input = tool_use["input"]
         if isinstance(tool_input, dict):
             prompt = tool_input.get("input", "")

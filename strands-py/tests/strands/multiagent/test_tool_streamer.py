@@ -7,15 +7,15 @@ from unittest.mock import Mock
 import pytest
 
 from strands.interrupt import Interrupt, _InterruptState
-from strands.multiagent.base import Status
-from strands.multiagent.graph import GraphResult
-from strands.multiagent.swarm import SwarmResult
-from strands.tools._tool_streamer import (
+from strands.multiagent._tool_streamer import (
     _INTERRUPTED_TURNS_KEY,
     _AgentToolAdapter,
     _MultiAgentToolAdapter,
     _ToolStreamer,
 )
+from strands.multiagent.base import Status
+from strands.multiagent.graph import GraphResult
+from strands.multiagent.swarm import SwarmResult
 from strands.types._snapshot import Snapshot
 
 TOOL_USE = {"toolUseId": "t", "name": "tool", "input": {}}

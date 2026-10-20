@@ -16,6 +16,10 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import quote
 
 from ...interrupt import InterruptException
+from ...multiagent._tool_streamer import (
+    _MultiAgentToolAdapter,
+    _ToolStreamer,
+)
 from ...multiagent.spec import (
     AgentBuilder,
     Choice,
@@ -28,10 +32,6 @@ from ...multiagent.spec import (
     _to_schema_properties,
 )
 from ...multiagent.swarm import Swarm
-from ...tools._tool_streamer import (
-    _MultiAgentToolAdapter,
-    _ToolStreamer,
-)
 from ...tools.decorator import tool
 from ...types.multiagent import MultiAgentInput
 from ...types.tools import ToolContext
