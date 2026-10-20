@@ -27,24 +27,21 @@ async def _stream(*events: dict[str, Any]):
         yield event
 
 
-def _adapter(child: Mock) -> _AgentToolAdapter:
-    """Configure a mocked Agent stream adapter."""
-    return _AgentToolAdapter(child, label="Child")
+AGENT_ADAPTER = _AgentToolAdapter(label="Child")
+MULTI_AGENT_ADAPTER = _MultiAgentToolAdapter(label="Swarm")
 
 
 @pytest.mark.parametrize("result_type", [GraphResult, SwarmResult])
 def test_multiagent_adapter_classifies_graph_and_swarm_interrupts(result_type):
-    adapter = _MultiAgentToolAdapter(Mock(), label="Multi-agent invocation")
     result = result_type(status=Status.INTERRUPTED, interrupts=[Interrupt("approval", "confirm")])
 
-    assert adapter.classify(result) == [Interrupt("approval", "confirm")]
+    assert MULTI_AGENT_ADAPTER.classify(Mock(), result) == [Interrupt("approval", "confirm")]
 
 
 def test_multiagent_adapter_reports_incomplete_result_with_its_label():
-    adapter = _MultiAgentToolAdapter(Mock(), label="Swarm")
     result = SwarmResult(status=Status.FAILED, execution_count=2)
 
-    assert adapter.classify(result) == (
+    assert MULTI_AGENT_ADAPTER.classify(Mock(), result) == (
         f"Swarm stopped before completing (status=failed, 2 iterations). Partial output:\n{result}"
     )
 
@@ -53,9 +50,9 @@ def test_multiagent_adapter_round_trips_orchestrator_state():
     source = Mock(id="swarm")
     source.serialize_state.return_value = {"status": "interrupted"}
     target = Mock(id="swarm", _interrupt_state=_InterruptState(activated=True))
-    snapshot = _MultiAgentToolAdapter(source, label="Swarm").take_snapshot()
+    snapshot = MULTI_AGENT_ADAPTER.take_snapshot(source)
 
-    awaiting_responses = _MultiAgentToolAdapter(target, label="Swarm").restore(Snapshot.from_dict(snapshot.to_dict()))
+    awaiting_responses = MULTI_AGENT_ADAPTER.restore(target, Snapshot.from_dict(snapshot.to_dict()))
 
     assert awaiting_responses is True
     target.deserialize_state.assert_called_once_with({"status": "interrupted"})
@@ -71,7 +68,9 @@ async def test_stream_skips_terminal_result_and_retains_it(alist):
         namespace="v1:test",
     )
 
-    tru_events = await alist(tool_streamer.stream(_adapter(child), _stream({"text": "progress"}, {"result": result})))
+    tru_events = await alist(
+        tool_streamer.stream(AGENT_ADAPTER, child, _stream({"text": "progress"}, {"result": result}))
+    )
 
     assert tru_events == [{"text": "progress"}]
     assert tool_streamer.result is result
@@ -88,7 +87,7 @@ async def test_stream_stores_and_namespaces_child_interrupts(alist):
         namespace="v1:test",
     )
 
-    tru_events = await alist(tool_streamer.stream(_adapter(child), _stream({"result": result})))
+    tru_events = await alist(tool_streamer.stream(AGENT_ADAPTER, child, _stream({"result": result})))
 
     assert tru_events == []
     assert tool_streamer.interrupts == [Interrupt("v1:test:t:approval", "confirm")]
@@ -100,7 +99,7 @@ async def test_stream_returns_error_when_child_does_not_produce_a_result(alist):
     child = Mock()
     tool_streamer = _ToolStreamer(interrupt_state=None, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test")
 
-    tru_events = await alist(tool_streamer.stream(_adapter(child), _stream({"text": "progress"})))
+    tru_events = await alist(tool_streamer.stream(AGENT_ADAPTER, child, _stream({"text": "progress"})))
 
     assert tru_events == [
         {"text": "progress"},
@@ -108,7 +107,14 @@ async def test_stream_returns_error_when_child_does_not_produce_a_result(alist):
     assert tool_streamer.error == "Child did not produce a result."
 
 
-def test_resume_reraises_unloadable_turns_that_still_await_an_approval():
+@pytest.mark.parametrize(
+    "scope,adapter,wrap",
+    [
+        ("agent", AGENT_ADAPTER, lambda state: {"interrupt_state": state}),
+        ("multiAgent", MULTI_AGENT_ADAPTER, lambda state: {"state": {"_internal_state": {"interrupt_state": state}}}),
+    ],
+)
+def test_resume_reraises_unloadable_turns_that_still_await_an_approval(scope, adapter, wrap):
     interrupt = Interrupt("v1:test:t:approval", "confirm", response="approved")
     awaited = _InterruptState(interrupts={"approval": Interrupt("approval", "confirm")}, activated=True)
     parent_state = _InterruptState(
@@ -116,10 +122,10 @@ def test_resume_reraises_unloadable_turns_that_still_await_an_approval():
         context={
             _INTERRUPTED_TURNS_KEY: {
                 "t": {
-                    "scope": "agent",
+                    "scope": scope,
                     "schema_version": "0.0",
                     "created_at": "2026-01-01T00:00:00+00:00",
-                    "data": {"interrupt_state": awaited.to_dict()},
+                    "data": wrap(awaited.to_dict()),
                     "app_data": {},
                 }
             }
@@ -129,7 +135,7 @@ def test_resume_reraises_unloadable_turns_that_still_await_an_approval():
     child = Mock()
     tool_streamer = _ToolStreamer(interrupt_state=parent_state, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test")
 
-    responses = tool_streamer.resume(_adapter(child), "unavailable")
+    responses = tool_streamer.resume(adapter, child, "unavailable")
 
     assert responses is None
     assert tool_streamer.interrupts == [Interrupt(interrupt.id, "confirm")]
@@ -148,7 +154,7 @@ def test_resume_returns_error_when_saved_turn_is_missing_or_unreadable(turn):
     child._interrupt_state = SimpleNamespace(activated=False)
     tool_streamer = _ToolStreamer(interrupt_state=parent_state, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test")
 
-    responses = tool_streamer.resume(_adapter(child), "unavailable")
+    responses = tool_streamer.resume(AGENT_ADAPTER, child, "unavailable")
 
     assert responses is None
     assert tool_streamer.error == "unavailable"
@@ -162,6 +168,6 @@ async def test_stream_clears_completed_child_turn_and_preserves_siblings(alist):
     result = Mock(stop_reason="end_turn", interrupts=[])
     tool_streamer = _ToolStreamer(interrupt_state=parent_state, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test")
 
-    await alist(tool_streamer.stream(_adapter(child), _stream({"result": result})))
+    await alist(tool_streamer.stream(AGENT_ADAPTER, child, _stream({"result": result})))
 
     assert parent_state.context[_INTERRUPTED_TURNS_KEY] == {"t2": {}}

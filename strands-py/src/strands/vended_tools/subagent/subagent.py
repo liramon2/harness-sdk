@@ -48,6 +48,8 @@ if TYPE_CHECKING:
 
 _DEPTH_STATE_KEY = "strands.subagent_depth"
 
+_SUBAGENT_ADAPTER = _AgentToolAdapter(label="Subagent")
+
 _FORK_PREAMBLE = (
     "The conversation so far is the parent agent's. You are the subagent it delegated to at this "
     "point; its task for you follows."
@@ -285,7 +287,8 @@ class _SubagentTool(AgentTool):
                 error,
             )
         resumed = tool_streamer.resume(
-            None if child is None else _AgentToolAdapter(child, label="Subagent"),
+            _SUBAGENT_ADAPTER,
+            child,
             "Subagent did NOT run and the response was NOT applied: its interrupted turn is not available. "
             "Do not report the delegated task as completed; if it is still needed, delegate it again.",
         )
@@ -316,9 +319,8 @@ class _SubagentTool(AgentTool):
                 tool_context.cancel_signal if tool_context is not None else getattr(parent, "cancel_signal", None)
             )
             child_state = {**invocation_state} if isinstance(invocation_state, dict) else invocation_state
-            adapter = _AgentToolAdapter(child, label="Subagent")
             source = child.stream_async(prompt, invocation_state=child_state, cancel_signal=cancel_signal)
-            async for event in tool_streamer.stream(adapter, source):
+            async for event in tool_streamer.stream(_SUBAGENT_ADAPTER, child, source):
                 yield ToolStreamEvent(tool_use, event)
             yield tool_streamer.terminal_event(tool_use)
         except Exception as exc:

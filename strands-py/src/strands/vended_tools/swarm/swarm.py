@@ -12,10 +12,10 @@ from __future__ import annotations
 import logging
 import weakref
 from collections.abc import AsyncGenerator, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import quote
 
-from ...interrupt import Interrupt, InterruptException
+from ...interrupt import InterruptException
 from ...multiagent.spec import (
     AgentBuilder,
     Choice,
@@ -58,6 +58,13 @@ _DEFAULT_MAX_AGENTS = 20
 
 # The SDK Swarm raises ValueError if a node already has handoff_to_agent.
 _EXCLUDED_TOOLS = frozenset({"handoff_to_agent"})
+
+_SWARM_ADAPTER = _MultiAgentToolAdapter(label="Swarm")
+
+_UNAVAILABLE_MESSAGE = (
+    "Swarm did NOT run and the response was NOT applied: its interrupted turn is not available. "
+    "Do not report the task as completed; if it is still needed, start the swarm again."
+)
 
 # Every swarm tool created, so children lose all of them regardless of name or instance.
 _SWARM_TOOLS: weakref.WeakSet[DecoratedFunctionTool] = weakref.WeakSet()
@@ -178,12 +185,21 @@ def make_swarm(
         if entry_point is not None and entry_point not in {spec.name for spec in specs}:
             raise ValueError(f"entry_point {entry_point!r} does not match any agent name")
         child_agents = {}
-        for spec in specs:
-            child = build(spec)
-            for tool_name, child_tool in list(child.tool_registry.registry.items()):
-                if tool_name in _EXCLUDED_TOOLS or child_tool in _SWARM_TOOLS:
-                    del child.tool_registry.registry[tool_name]
-            child_agents[spec.name] = child
+        try:
+            for spec in specs:
+                child = build(spec)
+                for tool_name, child_tool in list(child.tool_registry.registry.items()):
+                    if tool_name in _EXCLUDED_TOOLS or child_tool in _SWARM_TOOLS:
+                        del child.tool_registry.registry[tool_name]
+                child_agents[spec.name] = child
+        except Exception as error:
+            if not tool_streamer.is_resuming():
+                raise
+            logger.warning(
+                "tool_use_id=<%s> | failed to rebuild interrupted swarm: %s", tool_context.tool_use["toolUseId"], error
+            )
+            tool_streamer.resume(_SWARM_ADAPTER, None, _UNAVAILABLE_MESSAGE)
+            _raise_unfinished(tool_streamer)
 
         sdk_swarm = Swarm(
             id=f"v1:swarm:{quote(tool_context.tool_use['toolUseId'], safe='')}",
@@ -191,24 +207,18 @@ def make_swarm(
             entry_point=child_agents[entry_point] if entry_point is not None else None,
             **swarm_limits,
         )
-        adapter = _MultiAgentToolAdapter(sdk_swarm, label="Swarm")
         swarm_input: MultiAgentInput = task
         if tool_streamer.is_resuming():
-            resumed = tool_streamer.resume(
-                adapter,
-                "Swarm did NOT run and the response was NOT applied: its interrupted turn is not available. "
-                "Do not report the task as completed; if it is still needed, start the swarm again.",
-            )
+            resumed = tool_streamer.resume(_SWARM_ADAPTER, sdk_swarm, _UNAVAILABLE_MESSAGE)
             if resumed is None:
                 _raise_unfinished(tool_streamer)
-                return
             swarm_input = resumed
 
         logger.info("task=<%s>, agents=<%d> | starting swarm", task[:120], len(child_agents))
         # Drop request_state so a child's stop can't halt the parent.
         child_state = {key: value for key, value in tool_context.invocation_state.items() if key != "request_state"}
         source = sdk_swarm.stream_async(swarm_input, invocation_state=child_state)
-        async for event in tool_streamer.stream(adapter, source):
+        async for event in tool_streamer.stream(_SWARM_ADAPTER, sdk_swarm, source):
             yield event
         if tool_streamer.error is not None or tool_streamer.interrupts is not None:
             _raise_unfinished(tool_streamer)
@@ -221,13 +231,11 @@ def make_swarm(
 # ---- Internals ----
 
 
-def _raise_unfinished(tool_streamer: _ToolStreamer) -> None:
+def _raise_unfinished(tool_streamer: _ToolStreamer) -> NoReturn:
     """Raise an unfinished streamer terminal state."""
     if tool_streamer.interrupts:
-        interrupt = tool_streamer.interrupts[0]
-        raise InterruptException(
-            Interrupt(interrupt.id, interrupt.name, {"name": interrupt.name, "reason": interrupt.reason})
-        )
+        # The decorator surfaces a single interrupt, so the rest are raised on later resumes.
+        raise InterruptException(tool_streamer.interrupts[0])
     raise RuntimeError(tool_streamer.error)
 
 

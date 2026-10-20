@@ -36,63 +36,68 @@ class _ToolAdapter(Protocol):
     label: str
     """Model-facing name of the child, used in terminal error messages."""
 
-    def take_snapshot(self) -> Snapshot:
+    def take_snapshot(self, child: Any) -> Snapshot:
         """Capture snapshot needed to resume the child invocation."""
         ...
 
-    def restore(self, snapshot: Snapshot | None) -> bool:
+    def restore(self, child: Any, snapshot: Snapshot | None) -> bool:
         """Restore snapshot and report whether it awaits interrupt responses."""
         ...
 
-    def classify(self, result: Any) -> list[Interrupt] | str | None:
+    def classify(self, child: Any, result: Any) -> list[Interrupt] | str | None:
         """Return interrupts, a failure message, or None for a successful result."""
+        ...
+
+    def pending_interrupt_ids(self, turn: Any) -> set[str]:
+        """Return the interrupt ids a stored turn awaits, without restoring a child."""
         ...
 
 
 class _AgentToolAdapter:
     """Provide Agent-specific operations to a tool streamer."""
 
-    def __init__(self, agent: Agent, *, label: str) -> None:
-        self._agent = agent
+    def __init__(self, *, label: str) -> None:
         self.label = label
 
-    def take_snapshot(self) -> Snapshot:
-        return self._agent.take_snapshot(preset="session")
+    def take_snapshot(self, child: Agent) -> Snapshot:
+        return child.take_snapshot(preset="session")
 
-    def restore(self, snapshot: Snapshot | None) -> bool:
+    def restore(self, child: Agent, snapshot: Snapshot | None) -> bool:
         if snapshot is not None:
-            self._agent.load_snapshot(snapshot)
-        return self._agent._interrupt_state.activated
+            child.load_snapshot(snapshot)
+        return child._interrupt_state.activated
 
-    def classify(self, result: Any) -> list[Interrupt] | str | None:
+    def classify(self, child: Agent, result: Any) -> list[Interrupt] | str | None:
         if result.stop_reason == "interrupt" and result.interrupts:
             return list(result.interrupts)
-        if result.stop_reason == "cancelled" and self._agent.cancel_signal.is_set():
+        if result.stop_reason == "cancelled" and child.cancel_signal.is_set():
             return f"{self.label} was cancelled."
         return None
+
+    def pending_interrupt_ids(self, turn: Any) -> set[str]:
+        return set(_InterruptState.from_dict(turn["data"]["interrupt_state"]).interrupts)
 
 
 class _MultiAgentToolAdapter:
     """Provide MultiAgentBase-specific operations to a tool streamer."""
 
-    def __init__(self, orchestrator: MultiAgentBase, *, label: str) -> None:
-        self._orchestrator = orchestrator
+    def __init__(self, *, label: str) -> None:
         self.label = label
 
-    def take_snapshot(self) -> Snapshot:
+    def take_snapshot(self, child: MultiAgentBase) -> Snapshot:
         from ..multiagent._snapshot import take_snapshot
 
-        return take_snapshot(self._orchestrator)
+        return take_snapshot(child)
 
-    def restore(self, snapshot: Snapshot | None) -> bool:
+    def restore(self, child: MultiAgentBase, snapshot: Snapshot | None) -> bool:
         if snapshot is not None:
             from ..multiagent._snapshot import load_snapshot
 
-            load_snapshot(self._orchestrator, snapshot)
-        interrupt_state = cast(_InterruptState, cast(Any, self._orchestrator)._interrupt_state)
+            load_snapshot(child, snapshot)
+        interrupt_state = cast(_InterruptState, cast(Any, child)._interrupt_state)
         return interrupt_state.activated
 
-    def classify(self, result: Any) -> list[Interrupt] | str | None:
+    def classify(self, child: MultiAgentBase, result: Any) -> list[Interrupt] | str | None:
         """Classify a MultiAgentResult."""
         from ..multiagent.base import Status
 
@@ -104,6 +109,10 @@ class _MultiAgentToolAdapter:
                 f"{result.execution_count} iterations). Partial output:\n{result}"
             )
         return None
+
+    def pending_interrupt_ids(self, turn: Any) -> set[str]:
+        interrupt_state = turn["data"]["state"]["_internal_state"]["interrupt_state"]
+        return set(_InterruptState.from_dict(interrupt_state).interrupts)
 
 
 class _ToolStreamer:
@@ -130,13 +139,14 @@ class _ToolStreamer:
     async def stream(
         self,
         adapter: _ToolAdapter,
+        child: Any,
         events: AsyncIterator[dict[str, Any]],
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield child progress events and retain terminal state for the tool."""
         async for event in events:
             if "result" in event:
                 self.result = event["result"]
-                self._outcome = adapter.classify(self.result)
+                self._outcome = adapter.classify(child, self.result)
                 continue
             yield event
 
@@ -150,7 +160,7 @@ class _ToolStreamer:
             if self._interrupt_state is not None:
                 if self._persist_interrupted_turn:
                     turns = self._interrupt_state.context.setdefault(_INTERRUPTED_TURNS_KEY, {})
-                    turns[self._tool_use_id] = copy.deepcopy(adapter.take_snapshot().to_dict())
+                    turns[self._tool_use_id] = copy.deepcopy(adapter.take_snapshot(child).to_dict())
                     self._interrupt_state._version += 1
                 outcome = [
                     Interrupt(f"{self._prefix}{interrupt.id}", interrupt.name, interrupt.reason)
@@ -197,29 +207,33 @@ class _ToolStreamer:
 
     def resume(
         self,
-        adapter: _ToolAdapter | None,
+        adapter: _ToolAdapter,
+        child: Any | None,
         unavailable_message: str,
     ) -> list[InterruptResponseContent] | None:
-        """Restore the child invocation and return its scoped interrupt responses."""
+        """Restore the child invocation and return its scoped interrupt responses.
+
+        A ``None`` child (it could not be rebuilt) is handled like a failed restore.
+        """
         if not self.is_resuming():
             return None
         assert self._interrupt_state is not None
 
-        if adapter is None:
-            self._handle_failed_restore(unavailable_message)
+        if child is None:
+            self._handle_failed_restore(adapter, unavailable_message)
             return None
         turns = self._interrupt_state.context.get(_INTERRUPTED_TURNS_KEY) or {}
         turn = turns.get(self._tool_use_id)
         try:
             snapshot = Snapshot.from_dict(turn) if turn is not None else None
-            awaiting_responses = adapter.restore(snapshot)
+            awaiting_responses = adapter.restore(child, snapshot)
         except Exception as error:
             logger.error(
                 "tool_use_id=<%s>, error=<%s> | failed to restore interrupted sub-agent turn",
                 self._tool_use_id,
                 error,
             )
-            self._handle_failed_restore(unavailable_message)
+            self._handle_failed_restore(adapter, unavailable_message)
             return None
 
         if turn is not None:
@@ -239,13 +253,13 @@ class _ToolStreamer:
             if response["interruptResponse"]["interruptId"].startswith(self._prefix)
         ]
 
-    def _handle_failed_restore(self, unavailable_message: str) -> None:
+    def _handle_failed_restore(self, adapter: _ToolAdapter, unavailable_message: str) -> None:
         """Re-raise pending interrupts when the child state cannot be restored."""
         assert self._interrupt_state is not None
         # Get all pending interrupt ids for this agent
         turn = (self._interrupt_state.context.get(_INTERRUPTED_TURNS_KEY) or {}).get(self._tool_use_id)
         try:
-            pending = _InterruptState.from_dict(turn["data"]["interrupt_state"]).interrupts  # type: ignore[index]
+            pending = adapter.pending_interrupt_ids(turn)
         except Exception:
             logger.error("tool_use_id=<%s> | stored turn has no readable interrupt state", self._tool_use_id)
             self.error = unavailable_message

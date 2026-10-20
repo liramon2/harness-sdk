@@ -24,7 +24,7 @@ from strands.telemetry.metrics import EventLoopMetrics
 from strands.tools.registry import ToolRegistry
 from strands.types._events import ToolInterruptEvent, ToolResultEvent, ToolStreamEvent
 from strands.types.tools import ToolContext
-from strands.vended_tools.handoff_to_user import HANDOFF_INTERRUPT_NAME, handoff_to_user
+from strands.vended_tools.handoff_to_user import handoff_to_user
 from strands.vended_tools.swarm import make_swarm, swarm
 from strands.vended_tools.swarm.swarm import (
     _DEFAULT_MAX_AGENTS,
@@ -228,11 +228,34 @@ class TestSwarmToolExecution:
             events = [event async for event in swarm.stream(tool_use, {"agent": parent})]
 
         assert isinstance(events[-1], ToolInterruptEvent)
-        assert events[-1].interrupts == [
-            Interrupt("v1:swarm:id:approval", "confirm", {"name": "confirm", "reason": None})
-        ]
+        assert events[-1].interrupts == [Interrupt("v1:swarm:id:approval", "confirm")]
         assert cls.call_args.kwargs["id"] == "v1:swarm:id"
         assert "id" in parent._interrupt_state.context["sub_agent_interrupted_turns"]
+
+    @pytest.mark.asyncio
+    async def test_builder_failure_on_resume_raises_the_interrupt_again_and_keeps_the_turn(self):
+        def _failing_builder(spec):
+            raise ConnectionError("model endpoint unavailable")
+
+        answered = Interrupt("v1:swarm:id:approval", "confirm", response="yes")
+        awaited = _InterruptState(interrupts={"approval": Interrupt("approval", "confirm")}, activated=True)
+        turn = {"scope": "multiAgent", "data": {"state": {"_internal_state": {"interrupt_state": awaited.to_dict()}}}}
+        parent = _mock_parent()
+        parent._interrupt_state = _InterruptState(
+            interrupts={answered.id: answered},
+            context={"sub_agent_interrupted_turns": {"id": turn}},
+            activated=True,
+        )
+        tool_use = {
+            "toolUseId": "id",
+            "name": "swarm",
+            "input": {"task": "t", "agents": [_spec("a", instructions="Do.")]},
+        }
+
+        events = [event async for event in make_swarm(builder=_failing_builder).stream(tool_use, {"agent": parent})]
+
+        assert events[-1] == ToolInterruptEvent(tool_use, [Interrupt(answered.id, "confirm")])
+        assert parent._interrupt_state.context["sub_agent_interrupted_turns"] == {"id": turn}
 
 
 def _tool_use(name, tool_input, tool_use_id):
@@ -275,10 +298,7 @@ class TestEndToEnd:
             reasons.append(interrupt.reason)
             result = agent([{"interruptResponse": {"interruptId": interrupt.id, "response": "yes"}}])
 
-        assert reasons == [
-            {"name": HANDOFF_INTERRUPT_NAME, "reason": "A"},
-            {"name": HANDOFF_INTERRUPT_NAME, "reason": "B"},
-        ]
+        assert reasons == ["A", "B"]
         assert str(result).strip() == "parent final"
 
 
