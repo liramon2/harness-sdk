@@ -1,8 +1,8 @@
-"""Wrapper around agent streaming in tool calls.
+"""Wrapper for streaming agents inside tool calls.
 
-Provides common functionality for streaming agents within tool calls, such as session persistence
-(via the parent agent's interrupt context), interrupt response forwarding, event conversion,
-and cancellation support. These features are implemented around stream calls (as opposed to within them)
+Provides common functionality for streaming child agents inside a parent agent's tool calls. This includes
+session persistence (via the parent agent's interrupt context), interrupt response forwarding, event conversion,
+and cancellation support. These features are implemented around stream calls and not within them
 because they require knowledge of the parent agent.
 """
 
@@ -31,8 +31,8 @@ _RESPONSES_KEY = "responses"
 _INTERRUPTED_TURNS_KEY = "sub_agent_interrupted_turns"
 
 
-class _ToolAdapter(Protocol):
-    """Provides persistence, interrupt, and result handling that differs between agent types in tool calls."""
+class _ChildAdapter(Protocol):
+    """Provides persistence, interrupt, and result handling that differs between child agent types."""
 
     label: str
     """Model-facing name of the child, used in terminal error messages."""
@@ -54,7 +54,7 @@ class _ToolAdapter(Protocol):
         ...
 
 
-class _AgentToolAdapter:
+class _ChildAgentAdapter:
     """Adapts an agent child to the tool streamer interface."""
 
     def __init__(self, *, label: str) -> None:
@@ -79,7 +79,7 @@ class _AgentToolAdapter:
         return set(_InterruptState.from_dict(turn["data"]["interrupt_state"]).interrupts)
 
 
-class _MultiAgentToolAdapter:
+class _ChildMultiAgentAdapter:
     """Adapts a multi-agent child to the tool streamer interface."""
 
     def __init__(self, *, label: str) -> None:
@@ -110,7 +110,7 @@ class _MultiAgentToolAdapter:
         return set(_InterruptState.from_dict(interrupt_state).interrupts)
 
 
-class _ToolStreamer:
+class _AgentToolStreamer:
     """Stream a child invocation through the parent tool lifecycle."""
 
     def __init__(
@@ -133,7 +133,7 @@ class _ToolStreamer:
 
     async def stream(
         self,
-        adapter: _ToolAdapter,
+        adapter: _ChildAdapter,
         child: Any,
         events: AsyncIterator[dict[str, Any]],
     ) -> AsyncIterator[dict[str, Any]]:
@@ -202,7 +202,7 @@ class _ToolStreamer:
 
     def resume(
         self,
-        adapter: _ToolAdapter,
+        adapter: _ChildAdapter,
         child: Any | None,
         unavailable_message: str,
     ) -> list[InterruptResponseContent] | None:
@@ -248,7 +248,7 @@ class _ToolStreamer:
             if response["interruptResponse"]["interruptId"].startswith(self._prefix)
         ]
 
-    def _handle_failed_restore(self, adapter: _ToolAdapter, unavailable_message: str) -> None:
+    def _handle_failed_restore(self, adapter: _ChildAdapter, unavailable_message: str) -> None:
         """Re-raise pending interrupts when the child state cannot be restored."""
         assert self._interrupt_state is not None
         # Get all pending interrupt ids for this agent

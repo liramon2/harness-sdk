@@ -11,7 +11,7 @@ from strands.agent.agent import Agent
 from strands.agent.agent_result import AgentResult
 from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
 from strands.interrupt import Interrupt, _InterruptState
-from strands.multiagent._tool_streamer import _INTERRUPTED_TURNS_KEY
+from strands.multiagent._agent_tool_streamer import _INTERRUPTED_TURNS_KEY
 from strands.session.file_session_manager import FileSessionManager
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.types._events import AgentAsToolStreamEvent, ToolInterruptEvent, ToolResultEvent, ToolStreamEvent

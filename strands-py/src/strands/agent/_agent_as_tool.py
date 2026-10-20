@@ -177,7 +177,7 @@ class _AgentAsTool(AgentTool):
             sub-agent is interrupted, or ToolResultEvent with the final response.
         """
         # Imported here: strands.multiagent imports strands.agent, which imports this module.
-        from ..multiagent._tool_streamer import _AgentToolAdapter, _ToolStreamer
+        from ..multiagent._agent_tool_streamer import _AgentToolStreamer, _ChildAgentAdapter
 
         tool_input = tool_use["input"]
         if isinstance(tool_input, dict):
@@ -190,7 +190,7 @@ class _AgentAsTool(AgentTool):
 
         tool_use_id = tool_use["toolUseId"]
         parent = invocation_state.get("agent")
-        tool_streamer = _ToolStreamer(
+        tool_streamer = _AgentToolStreamer(
             interrupt_state=None if parent is None else parent._interrupt_state,
             tool_use_id=tool_use_id,
             namespace="v1:agent_as_tool",
@@ -215,7 +215,7 @@ class _AgentAsTool(AgentTool):
             )
             return
 
-        adapter = _AgentToolAdapter(label=f"Agent '{self._tool_name}'")
+        adapter = _ChildAgentAdapter(label=f"Agent '{self._tool_name}'")
         try:
             if tool_streamer.is_resuming():
                 unavailable_message = (

@@ -7,11 +7,11 @@ from unittest.mock import Mock
 import pytest
 
 from strands.interrupt import Interrupt, _InterruptState
-from strands.multiagent._tool_streamer import (
+from strands.multiagent._agent_tool_streamer import (
     _INTERRUPTED_TURNS_KEY,
-    _AgentToolAdapter,
-    _MultiAgentToolAdapter,
-    _ToolStreamer,
+    _AgentToolStreamer,
+    _ChildAgentAdapter,
+    _ChildMultiAgentAdapter,
 )
 from strands.multiagent.base import Status
 from strands.multiagent.graph import GraphResult
@@ -27,8 +27,8 @@ async def _stream(*events: dict[str, Any]):
         yield event
 
 
-AGENT_ADAPTER = _AgentToolAdapter(label="Child")
-MULTI_AGENT_ADAPTER = _MultiAgentToolAdapter(label="Swarm")
+AGENT_ADAPTER = _ChildAgentAdapter(label="Child")
+MULTI_AGENT_ADAPTER = _ChildMultiAgentAdapter(label="Swarm")
 
 
 @pytest.mark.parametrize("result_type", [GraphResult, SwarmResult])
@@ -62,7 +62,7 @@ def test_multiagent_adapter_round_trips_orchestrator_state():
 async def test_stream_skips_terminal_result_and_retains_it(alist):
     child = Mock()
     result = Mock(stop_reason="completed", interrupts=[])
-    tool_streamer = _ToolStreamer(
+    tool_streamer = _AgentToolStreamer(
         interrupt_state=None,
         tool_use_id=TOOL_USE["toolUseId"],
         namespace="v1:test",
@@ -81,7 +81,7 @@ async def test_stream_stores_and_namespaces_child_interrupts(alist):
     child = Mock()
     child.take_snapshot.return_value = Snapshot(scope="agent", schema_version="1.0", data={}, app_data={})
     result = Mock(stop_reason="interrupt", interrupts=[Interrupt("approval", "confirm")])
-    tool_streamer = _ToolStreamer(
+    tool_streamer = _AgentToolStreamer(
         interrupt_state=_InterruptState(),
         tool_use_id=TOOL_USE["toolUseId"],
         namespace="v1:test",
@@ -97,7 +97,7 @@ async def test_stream_stores_and_namespaces_child_interrupts(alist):
 @pytest.mark.asyncio
 async def test_stream_returns_error_when_child_does_not_produce_a_result(alist):
     child = Mock()
-    tool_streamer = _ToolStreamer(interrupt_state=None, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test")
+    tool_streamer = _AgentToolStreamer(interrupt_state=None, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test")
 
     tru_events = await alist(tool_streamer.stream(AGENT_ADAPTER, child, _stream({"text": "progress"})))
 
@@ -133,7 +133,9 @@ def test_resume_reraises_unloadable_turns_that_still_await_an_approval(scope, ad
         activated=True,
     )
     child = Mock()
-    tool_streamer = _ToolStreamer(interrupt_state=parent_state, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test")
+    tool_streamer = _AgentToolStreamer(
+        interrupt_state=parent_state, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test"
+    )
 
     responses = tool_streamer.resume(adapter, child, "unavailable")
 
@@ -152,7 +154,9 @@ def test_resume_returns_error_when_saved_turn_is_missing_or_unreadable(turn):
     )
     child = Mock()
     child._interrupt_state = SimpleNamespace(activated=False)
-    tool_streamer = _ToolStreamer(interrupt_state=parent_state, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test")
+    tool_streamer = _AgentToolStreamer(
+        interrupt_state=parent_state, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test"
+    )
 
     responses = tool_streamer.resume(AGENT_ADAPTER, child, "unavailable")
 
@@ -166,7 +170,9 @@ async def test_stream_clears_completed_child_turn_and_preserves_siblings(alist):
     child = Mock()
     child.cancel_signal.is_set.return_value = False
     result = Mock(stop_reason="end_turn", interrupts=[])
-    tool_streamer = _ToolStreamer(interrupt_state=parent_state, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test")
+    tool_streamer = _AgentToolStreamer(
+        interrupt_state=parent_state, tool_use_id=TOOL_USE["toolUseId"], namespace="v1:test"
+    )
 
     await alist(tool_streamer.stream(AGENT_ADAPTER, child, _stream({"result": result})))
 

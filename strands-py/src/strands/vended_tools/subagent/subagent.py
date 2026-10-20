@@ -15,9 +15,9 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from ...agent.conversation_manager.compression.context_compression import find_valid_trim_point
-from ...multiagent._tool_streamer import (
-    _AgentToolAdapter,
-    _ToolStreamer,
+from ...multiagent._agent_tool_streamer import (
+    _AgentToolStreamer,
+    _ChildAgentAdapter,
 )
 from ...multiagent.spec import (
     AgentBuilder,
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 
 _DEPTH_STATE_KEY = "strands.subagent_depth"
 
-_SUBAGENT_ADAPTER = _AgentToolAdapter(label="Subagent")
+_SUBAGENT_ADAPTER = _ChildAgentAdapter(label="Subagent")
 
 _FORK_PREAMBLE = (
     "The conversation so far is the parent agent's. You are the subagent it delegated to at this "
@@ -224,7 +224,7 @@ class _SubagentTool(AgentTool):
         return ToolResultEvent({"toolUseId": tool_use_id, "status": "error", "content": [{"text": text}]})
 
     def _prepare_child(
-        self, tool_use: ToolUse, raw: Mapping[str, Any], parent: Agent | None, tool_streamer: _ToolStreamer
+        self, tool_use: ToolUse, raw: Mapping[str, Any], parent: Agent | None, tool_streamer: _AgentToolStreamer
     ) -> tuple[Agent, Any] | str | ToolInterruptEvent | ToolResultEvent:
         """Resolve or resume the child agent and its prompt.
 
@@ -271,7 +271,7 @@ class _SubagentTool(AgentTool):
         return child, prompt
 
     def _prepare_resume(
-        self, tool_use: ToolUse, raw: Mapping[str, Any], parent: Agent | None, tool_streamer: _ToolStreamer
+        self, tool_use: ToolUse, raw: Mapping[str, Any], parent: Agent | None, tool_streamer: _AgentToolStreamer
     ) -> tuple[Agent, Any] | ToolInterruptEvent | ToolResultEvent:
         """Rebuild the interrupted child from the same tool input and restore its stored turn."""
         spec = self._resolve(raw)
@@ -301,7 +301,7 @@ class _SubagentTool(AgentTool):
         tool_use_id = tool_use["toolUseId"]
         raw = tool_use.get("input", {}) or {}
         parent = invocation_state.get("agent")
-        tool_streamer = _ToolStreamer(
+        tool_streamer = _AgentToolStreamer(
             interrupt_state=getattr(parent, "_interrupt_state", None),
             tool_use_id=tool_use_id,
             namespace="v1:subagent",

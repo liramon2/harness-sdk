@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import quote
 
 from ...interrupt import InterruptException
-from ...multiagent._tool_streamer import (
-    _MultiAgentToolAdapter,
-    _ToolStreamer,
+from ...multiagent._agent_tool_streamer import (
+    _AgentToolStreamer,
+    _ChildMultiAgentAdapter,
 )
 from ...multiagent.spec import (
     AgentBuilder,
@@ -59,7 +59,7 @@ _DEFAULT_MAX_AGENTS = 20
 # The SDK Swarm raises ValueError if a node already has handoff_to_agent.
 _EXCLUDED_TOOLS = frozenset({"handoff_to_agent"})
 
-_SWARM_ADAPTER = _MultiAgentToolAdapter(label="Swarm")
+_SWARM_ADAPTER = _ChildMultiAgentAdapter(label="Swarm")
 
 _UNAVAILABLE_MESSAGE = (
     "Swarm did NOT run and the response was NOT applied: its interrupted turn is not available. "
@@ -166,7 +166,7 @@ def make_swarm(
             tool_context: Injected by the framework. Not user-facing.
             entry_point: Name of the agent that starts the swarm. Defaults to the first agent.
         """
-        tool_streamer = _ToolStreamer(
+        tool_streamer = _AgentToolStreamer(
             interrupt_state=getattr(tool_context.agent, "_interrupt_state", None),
             tool_use_id=tool_context.tool_use["toolUseId"],
             namespace="v1:swarm",
@@ -231,7 +231,7 @@ def make_swarm(
 # ---- Internals ----
 
 
-def _raise_unfinished(tool_streamer: _ToolStreamer) -> NoReturn:
+def _raise_unfinished(tool_streamer: _AgentToolStreamer) -> NoReturn:
     """Raise an unfinished streamer terminal state."""
     if tool_streamer.interrupts:
         # The decorator surfaces a single interrupt, so the rest are raised on later resumes.
