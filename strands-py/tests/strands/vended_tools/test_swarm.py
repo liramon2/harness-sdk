@@ -16,12 +16,13 @@ from strands import Agent
 from strands.agent import AgentResult
 from strands.agent.state import AgentState
 from strands.experimental.tools import stop
+from strands.interrupt import Interrupt, _InterruptState
 from strands.multiagent.base import NodeResult, Status
 from strands.multiagent.spec import Fixed, Open, Preset
 from strands.multiagent.swarm import SwarmResult
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.tools.registry import ToolRegistry
-from strands.types._events import ToolResultEvent, ToolStreamEvent
+from strands.types._events import ToolInterruptEvent, ToolResultEvent, ToolStreamEvent
 from strands.types.tools import ToolContext
 from strands.vended_tools.handoff_to_user import HANDOFF_INTERRUPT_NAME, handoff_to_user
 from strands.vended_tools.swarm import make_swarm, swarm
@@ -43,6 +44,7 @@ def _mock_parent() -> SimpleNamespace:
         callback_handler=None,
         trace_attributes=None,
         state=AgentState(),
+        _interrupt_state=_InterruptState(),
     )
 
 
@@ -53,9 +55,8 @@ def _ctx():
 
 
 async def _run(swarm_tool, **kwargs):
-    """Drain the tool's async generator; return (streamed events, final result)."""
-    yielded = [event async for event in swarm_tool(**kwargs)]
-    return yielded[:-1], yielded[-1]
+    """Drain the decorated swarm tool's async generator."""
+    return [event async for event in swarm_tool(**kwargs)]
 
 
 def _spec(name, **kw):
@@ -150,7 +151,7 @@ class TestMakeSwarm:
 class TestSwarmToolExecution:
     @pytest.mark.asyncio
     async def test_streams_events_and_returns_result(self):
-        """Through the decorator: swarm events surface as ToolStreamEvents, final text as the tool result."""
+        """Swarm events surface as ToolStreamEvents and its final text as the tool result."""
         events = [{"type": "multiagent_node_start", "node_id": "a", "node_type": "agent"}]
         tool_use = {
             "toolUseId": "t1",
@@ -163,7 +164,6 @@ class TestSwarmToolExecution:
             out = [e async for e in swarm.stream(tool_use, invocation_state)]
         # The parent's request_state is not forwarded to children.
         cls.return_value.stream_async.assert_called_once_with("go", invocation_state={"agent": parent, "user_key": "v"})
-        # The decorator also streams the final yield before wrapping it as the result.
         streamed = [e["tool_stream_event"]["data"] for e in out if isinstance(e, ToolStreamEvent)]
         assert streamed == [*events, "writer: Done!"]
         assert isinstance(out[-1], ToolResultEvent)
@@ -194,7 +194,7 @@ class TestSwarmToolExecution:
         ],
     )
     async def test_rejects_invalid_agents(self, agents, kw, match):
-        with pytest.raises(ValueError, match=match):
+        with _patch(), pytest.raises(ValueError, match=match):
             await _run(make_swarm(max_agents=2), task="t", agents=agents, tool_context=_ctx(), **kw)
 
     @pytest.mark.asyncio
@@ -211,8 +211,28 @@ class TestSwarmToolExecution:
                 yield {"type": "multiagent_node_start", "node_id": "a", "node_type": "agent"}
 
             cls.return_value.stream_async = Mock(side_effect=_no_result)
-            with pytest.raises(RuntimeError, match="without producing a result"):
+            with pytest.raises(RuntimeError, match="did not produce a result"):
                 await _run(swarm, task="t", agents=[_spec("a", instructions="Do.")], tool_context=_ctx())
+
+    @pytest.mark.asyncio
+    async def test_persists_interrupted_swarm_with_stable_id(self):
+        parent = _mock_parent()
+        interrupted = _result(status=Status.INTERRUPTED)
+        interrupted.interrupts = [Interrupt("approval", "confirm")]
+        with _patch(interrupted) as cls:
+            tool_use = {
+                "toolUseId": "id",
+                "name": "swarm",
+                "input": {"task": "t", "agents": [_spec("a", instructions="Do.")]},
+            }
+            events = [event async for event in swarm.stream(tool_use, {"agent": parent})]
+
+        assert isinstance(events[-1], ToolInterruptEvent)
+        assert events[-1].interrupts == [
+            Interrupt("v1:swarm:id:approval", "confirm", {"name": "confirm", "reason": None})
+        ]
+        assert cls.call_args.kwargs["id"] == "v1:swarm:id"
+        assert "id" in parent._interrupt_state.context["sub_agent_interrupted_turns"]
 
 
 def _tool_use(name, tool_input, tool_use_id):

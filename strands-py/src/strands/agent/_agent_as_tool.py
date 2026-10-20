@@ -216,6 +216,7 @@ class _AgentAsTool(AgentTool):
             )
             return
 
+        adapter = _AgentToolAdapter(self._agent, label=f"Agent '{self._tool_name}'")
         try:
             if tool_streamer.is_resuming():
                 unavailable_message = (
@@ -223,10 +224,7 @@ class _AgentAsTool(AgentTool):
                     "its interrupted turn is not available. Do not report the requested action as "
                     "completed; tell the user it failed and ask them to respond again."
                 )
-                resumed = tool_streamer.resume(
-                    _AgentToolAdapter(self._agent),
-                    unavailable_message,
-                )
+                resumed = tool_streamer.resume(adapter, unavailable_message)
                 if resumed is None:
                     yield tool_streamer.terminal_event(tool_use, self._result_content)
                     return
@@ -248,9 +246,6 @@ class _AgentAsTool(AgentTool):
                 tool_context.cancel_signal
                 if tool_context is not None
                 else getattr(invocation_state.get("agent"), "cancel_signal", None)
-            )
-            adapter = _AgentToolAdapter(
-                self._agent,
             )
             source = self._agent.stream_async(prompt, cancel_signal=cancel_signal)
             async for event in tool_streamer.stream(adapter, source):

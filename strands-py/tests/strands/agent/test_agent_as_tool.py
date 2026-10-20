@@ -768,7 +768,7 @@ async def test_stream_cancelled_sub_agent_returns_error(tool, mock_agent, tool_u
             {
                 "toolUseId": "tool-123",
                 "status": "error",
-                "content": [{"text": "Nested agent was cancelled."}],
+                "content": [{"text": "Agent 'test_agent' was cancelled."}],
             }
         )
     ]
@@ -818,7 +818,7 @@ async def test_stream_pre_set_parent_cancel_signal_returns_error_without_model_r
         {
             "toolUseId": "tool-123",
             "status": "error",
-            "content": [{"text": "Nested agent was cancelled."}],
+            "content": [{"text": "Agent 'child' was cancelled."}],
         }
     )
     assert not any("sub-agent response" in str(message) for message in child.messages)

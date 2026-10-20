@@ -33,6 +33,9 @@ _INTERRUPTED_TURNS_KEY = "sub_agent_interrupted_turns"
 class _ToolAdapter(Protocol):
     """Provides persistence and result handling that differs between tool agent types."""
 
+    label: str
+    """Model-facing name of the child, used in terminal error messages."""
+
     def take_snapshot(self) -> Snapshot:
         """Capture snapshot needed to resume the child invocation."""
         ...
@@ -49,11 +52,9 @@ class _ToolAdapter(Protocol):
 class _AgentToolAdapter:
     """Provide Agent-specific operations to a tool streamer."""
 
-    def __init__(
-        self,
-        agent: Agent,
-    ) -> None:
+    def __init__(self, agent: Agent, *, label: str) -> None:
         self._agent = agent
+        self.label = label
 
     def take_snapshot(self) -> Snapshot:
         return self._agent.take_snapshot(preset="session")
@@ -67,21 +68,16 @@ class _AgentToolAdapter:
         if result.stop_reason == "interrupt" and result.interrupts:
             return list(result.interrupts)
         if result.stop_reason == "cancelled" and self._agent.cancel_signal.is_set():
-            return "Nested agent was cancelled."
+            return f"{self.label} was cancelled."
         return None
 
 
 class _MultiAgentToolAdapter:
     """Provide MultiAgentBase-specific operations to a tool streamer."""
 
-    def __init__(
-        self,
-        orchestrator: MultiAgentBase,
-        *,
-        label: str,
-    ) -> None:
+    def __init__(self, orchestrator: MultiAgentBase, *, label: str) -> None:
         self._orchestrator = orchestrator
-        self._label = label
+        self.label = label
 
     def take_snapshot(self) -> Snapshot:
         from ..multiagent._snapshot import take_snapshot
@@ -104,7 +100,7 @@ class _MultiAgentToolAdapter:
             return list(result.interrupts)
         if result.status is not Status.COMPLETED:
             return (
-                f"{self._label} stopped before completing (status={result.status.value}, "
+                f"{self.label} stopped before completing (status={result.status.value}, "
                 f"{result.execution_count} iterations). Partial output:\n{result}"
             )
         return None
@@ -145,11 +141,12 @@ class _ToolStreamer:
             yield event
 
         if self.result is None:
-            self.error = "Nested executor did not produce a result (no result)."
+            self.error = f"{adapter.label} did not produce a result."
             return
 
         outcome = self._outcome
         if isinstance(outcome, list):
+            # Without a parent interrupt state there is nothing to resume against, so ids pass through raw.
             if self._interrupt_state is not None:
                 if self._persist_interrupted_turn:
                     turns = self._interrupt_state.context.setdefault(_INTERRUPTED_TURNS_KEY, {})
@@ -182,7 +179,6 @@ class _ToolStreamer:
                     "content": [{"text": self.error}],
                 }
             )
-        assert self.result is not None
         return ToolResultEvent(
             {
                 "toolUseId": tool_use["toolUseId"],
@@ -229,9 +225,7 @@ class _ToolStreamer:
         if turn is not None:
             self._clear_interrupted_turn()
         if not awaiting_responses:
-            logger.error(
-                "tool_use_id=<%s> | cannot resume: the nested executor turn is not available", self._tool_use_id
-            )
+            logger.error("tool_use_id=<%s> | cannot resume: the sub-agent turn is not available", self._tool_use_id)
             self.error = unavailable_message
             return None
         return [
@@ -247,9 +241,7 @@ class _ToolStreamer:
 
     def _handle_failed_restore(self, unavailable_message: str) -> None:
         """Re-raise pending interrupts when the child state cannot be restored."""
-        if self._interrupt_state is None:
-            self.error = unavailable_message
-            return
+        assert self._interrupt_state is not None
         # Get all pending interrupt ids for this agent
         turn = (self._interrupt_state.context.get(_INTERRUPTED_TURNS_KEY) or {}).get(self._tool_use_id)
         try:

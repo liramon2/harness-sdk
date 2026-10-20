@@ -572,7 +572,7 @@ async def test_no_result_from_child_yields_error():
 
     tool = make_subagent(builder=lambda spec: _EmptyChild(), presets={"generalist": GENERALIST})
     result = _result(await _events(tool, {"task": "x"}))
-    assert result["status"] == "error" and "no result" in result["content"][0]["text"].lower()
+    assert result["status"] == "error" and result["content"][0]["text"] == "Subagent did not produce a result."
 
 
 @pytest.mark.asyncio
