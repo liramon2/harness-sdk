@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING, Any
 from typing_extensions import override
 
 from ..agent.state import AgentState
-from ..interrupt import Interrupt, _InterruptState, _NestedInterruptState
+from ..interrupt import _InterruptState
+from ..tools._tool_streamer import (
+    _AgentToolAdapter,
+    _ToolStreamer,
+)
 from ..types._events import AgentAsToolStreamEvent, ToolInterruptEvent, ToolResultEvent
 from ..types.content import Messages
 from ..types.tools import AgentTool, ToolGenerator, ToolResultContent, ToolSpec, ToolUse
@@ -28,8 +32,6 @@ DELEGATION_DESCRIPTION_SUFFIX = (
     " Calling this tool will return its response directly to the user as the final answer."
     " It should be the only tool called in the turn."
 )
-
-_INTERRUPTED_TURNS_KEY = "sub_agent_interrupted_turns"
 
 
 class _AgentAsTool(AgentTool):
@@ -189,11 +191,11 @@ class _AgentAsTool(AgentTool):
 
         tool_use_id = tool_use["toolUseId"]
         parent = invocation_state.get("agent")
-        # Sub-agent interrupt ids are namespaced per tool call, since two sub-agents can raise the same id.
-        nested = (
-            None
-            if parent is None
-            else _NestedInterruptState(parent._interrupt_state, _INTERRUPTED_TURNS_KEY, "v1:agent_as_tool", tool_use_id)
+        tool_streamer = _ToolStreamer(
+            interrupt_state=None if parent is None else parent._interrupt_state,
+            tool_use_id=tool_use_id,
+            namespace="v1:agent_as_tool",
+            persist_interrupted_turn=not self._preserve_context,
         )
 
         # Serialize access to the underlying agent. _reset_agent_state() mutates
@@ -215,15 +217,18 @@ class _AgentAsTool(AgentTool):
             return
 
         try:
-            if nested is not None and nested.is_resuming():
+            if tool_streamer.is_resuming():
                 unavailable_message = (
                     f"Agent '{self._tool_name}' did NOT run and the human's response was NOT applied: "
                     "its interrupted turn is not available. Do not report the requested action as "
                     "completed; tell the user it failed and ask them to respond again."
                 )
-                resumed = nested.resume(self._agent, tool_use, unavailable_message)
-                if not isinstance(resumed, list):
-                    yield resumed
+                resumed = tool_streamer.resume(
+                    _AgentToolAdapter(self._agent),
+                    unavailable_message,
+                )
+                if resumed is None:
+                    yield tool_streamer.terminal_event(tool_use, self._result_content)
                     return
                 prompt = resumed
                 logger.debug(
@@ -244,101 +249,25 @@ class _AgentAsTool(AgentTool):
                 if tool_context is not None
                 else getattr(invocation_state.get("agent"), "cancel_signal", None)
             )
-
-            result = None
-            # Captured before stream_async's finally clears it.
-            sub_cancel_signal_set = False
-            async for event in self._agent.stream_async(prompt, cancel_signal=cancel_signal):
-                if "result" in event:
-                    result = event["result"]
-                    sub_cancel_signal_set = self._agent.cancel_signal.is_set()
-                else:
-                    yield AgentAsToolStreamEvent(tool_use, event, self)
-
-            if result is None:
-                yield ToolResultEvent(
-                    {
-                        "toolUseId": tool_use_id,
-                        "status": "error",
-                        "content": [{"text": "Agent did not produce a result"}],
-                    }
+            adapter = _AgentToolAdapter(
+                self._agent,
+            )
+            source = self._agent.stream_async(prompt, cancel_signal=cancel_signal)
+            async for event in tool_streamer.stream(adapter, source):
+                yield AgentAsToolStreamEvent(tool_use, event, self)
+            terminal_event = tool_streamer.terminal_event(tool_use, self._result_content)
+            if (
+                isinstance(terminal_event, ToolInterruptEvent)
+                and self._preserve_context
+                and self._agent._session_manager is None
+            ):
+                logger.warning(
+                    "tool_name=<%s>, tool_use_id=<%s> | interrupted sub-agent has preserve_context=True and "
+                    "no session manager, so its interrupt cannot be resumed after a restart",
+                    self._tool_name,
+                    tool_use_id,
                 )
-                return
-
-            # Propagate sub-agent interrupts to the parent agent.
-            if result.stop_reason == "interrupt" and result.interrupts:
-                interrupts = list(result.interrupts)
-                if nested is not None:
-                    if self._preserve_context and getattr(self._agent, "_session_manager", None) is None:
-                        logger.warning(
-                            "tool_name=<%s>, tool_use_id=<%s> | interrupted sub-agent has preserve_context=True and "
-                            "no session manager, so its interrupt cannot be resumed after a restart",
-                            self._tool_name,
-                            tool_use_id,
-                        )
-                    interrupts = (
-                        [Interrupt(f"{nested.prefix}{i.id}", i.name, i.reason) for i in interrupts]
-                        if self._preserve_context
-                        else nested.store(self._agent, interrupts)
-                    )
-                yield ToolInterruptEvent(tool_use, interrupts)
-                return
-
-            # Immediate cancel (signal set) is an abort → error; the stop tool's deferred
-            # cancel never sets the signal and falls through to the success path.
-            if result.stop_reason == "cancelled" and sub_cancel_signal_set:
-                yield ToolResultEvent(
-                    {
-                        "toolUseId": tool_use_id,
-                        "status": "error",
-                        "content": [{"text": f"Agent '{self._tool_name}' cancelled"}],
-                    }
-                )
-                return
-
-            if result.structured_output:
-                yield ToolResultEvent(
-                    {
-                        "toolUseId": tool_use_id,
-                        "status": "success",
-                        "content": [{"json": result.structured_output.model_dump(mode="json")}],
-                    }
-                )
-            elif self._delegate:
-                # Copy content blocks verbatim; falls back to str(result) minus trailing \n.
-                content = result.message.get("content", [])
-                tool_result_content: list[ToolResultContent] = []
-                for block in content:
-                    if isinstance(block, dict):
-                        if "text" in block:
-                            tool_result_content.append(ToolResultContent(text=block["text"]))
-                        elif "json" in block:
-                            tool_result_content.append(ToolResultContent(json=block["json"]))
-                        elif "citationsContent" in block:
-                            cited = [
-                                inner["text"]
-                                for inner in block["citationsContent"].get("content", [])
-                                if isinstance(inner, dict) and "text" in inner
-                            ]
-                            if cited:
-                                tool_result_content.append(ToolResultContent(text="\n".join(cited)))
-                if not tool_result_content:
-                    tool_result_content = [ToolResultContent(text=str(result).rstrip("\n"))]
-                yield ToolResultEvent(
-                    {
-                        "toolUseId": tool_use_id,
-                        "status": "success",
-                        "content": tool_result_content,
-                    }
-                )
-            else:
-                yield ToolResultEvent(
-                    {
-                        "toolUseId": tool_use_id,
-                        "status": "success",
-                        "content": [{"text": str(result)}],
-                    }
-                )
+            yield terminal_event
 
         except Exception as e:
             logger.warning(
@@ -356,6 +285,36 @@ class _AgentAsTool(AgentTool):
             )
         finally:
             self._lock.release()
+
+    def _result_content(self, result: Any) -> list[ToolResultContent]:
+        """Render a completed agent result as tool-result content."""
+        if result.structured_output:
+            return [{"json": result.structured_output.model_dump(mode="json")}]
+        if self._delegate:
+            return self._delegate_result_content(result)
+        return [{"text": str(result)}]
+
+    @staticmethod
+    def _delegate_result_content(result: Any) -> list[ToolResultContent]:
+        """Return the result content delegated directly to the parent agent."""
+        content = result.message.get("content", [])
+        tool_result_content: list[ToolResultContent] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if "text" in block:
+                tool_result_content.append(ToolResultContent(text=block["text"]))
+            elif "json" in block:
+                tool_result_content.append(ToolResultContent(json=block["json"]))
+            elif "citationsContent" in block:
+                cited = [
+                    inner["text"]
+                    for inner in block["citationsContent"].get("content", [])
+                    if isinstance(inner, dict) and "text" in inner
+                ]
+                if cited:
+                    tool_result_content.append(ToolResultContent(text="\n".join(cited)))
+        return tool_result_content or [ToolResultContent(text=str(result).rstrip("\n"))]
 
     def _reset_agent_state(self, tool_use_id: str) -> None:
         """Reset the wrapped agent to its initial state.

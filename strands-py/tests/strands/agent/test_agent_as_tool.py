@@ -6,13 +6,14 @@ from urllib.parse import quote
 import pytest
 
 import strands
-from strands.agent._agent_as_tool import _INTERRUPTED_TURNS_KEY, _AgentAsTool
+from strands.agent._agent_as_tool import _AgentAsTool
 from strands.agent.agent import Agent
 from strands.agent.agent_result import AgentResult
 from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
 from strands.interrupt import Interrupt, _InterruptState
 from strands.session.file_session_manager import FileSessionManager
 from strands.telemetry.metrics import EventLoopMetrics
+from strands.tools._tool_streamer import _INTERRUPTED_TURNS_KEY
 from strands.types._events import AgentAsToolStreamEvent, ToolInterruptEvent, ToolResultEvent, ToolStreamEvent
 from tests.fixtures.mocked_model_provider import MockedModelProvider
 
@@ -767,7 +768,7 @@ async def test_stream_cancelled_sub_agent_returns_error(tool, mock_agent, tool_u
             {
                 "toolUseId": "tool-123",
                 "status": "error",
-                "content": [{"text": "Agent 'test_agent' cancelled"}],
+                "content": [{"text": "Nested agent was cancelled."}],
             }
         )
     ]
@@ -817,7 +818,7 @@ async def test_stream_pre_set_parent_cancel_signal_returns_error_without_model_r
         {
             "toolUseId": "tool-123",
             "status": "error",
-            "content": [{"text": "Agent 'child' cancelled"}],
+            "content": [{"text": "Nested agent was cancelled."}],
         }
     )
     assert not any("sub-agent response" in str(message) for message in child.messages)
