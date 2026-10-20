@@ -2013,7 +2013,6 @@ export class BedrockModel extends Model<BedrockModelConfig> {
     return {
       location: this._mapCitationLocationToBedrock(citation.location),
       sourceContent: citation.sourceContent.map((sc) => ({ text: sc.text })),
-      source: citation.source,
       title: citation.title,
     }
   }

@@ -4033,19 +4033,16 @@ describe('BedrockModel', () => {
                     citations: [
                       {
                         location: { documentChar: { documentIndex: 0, start: 150, end: 300 } },
-                        source: 'doc-0',
                         sourceContent: [{ text: 'char source' }],
                         title: 'Text Document',
                       },
                       {
                         location: { documentPage: { documentIndex: 0, start: 2, end: 3 } },
-                        source: 'doc-0',
                         sourceContent: [{ text: 'page source' }],
                         title: 'PDF Document',
                       },
                       {
                         location: { documentChunk: { documentIndex: 1, start: 5, end: 8 } },
-                        source: 'doc-1',
                         sourceContent: [{ text: 'chunk source' }],
                         title: 'Chunked Document',
                       },
@@ -4053,13 +4050,11 @@ describe('BedrockModel', () => {
                         location: {
                           searchResultLocation: { searchResultIndex: 0, start: 25, end: 150 },
                         },
-                        source: 'search-0',
                         sourceContent: [{ text: 'search source' }],
                         title: 'Search Result',
                       },
                       {
                         location: { web: { url: 'https://example.com/doc', domain: 'example.com' } },
-                        source: 'web-0',
                         sourceContent: [{ text: 'web source' }],
                         title: 'Web Page',
                       },
