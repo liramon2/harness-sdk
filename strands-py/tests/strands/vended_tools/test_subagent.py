@@ -398,7 +398,7 @@ def confirming_parent(tmp_path):
             if event.interrupt("confirm", reason="confirm?") != "APPROVE":
                 event.cancel_tool = "not approved"
 
-    def build(child_responses, parent_responses, parent_tools=()):
+    def build(child_responses, parent_responses):
         child_model = MockedModelProvider(child_responses)
         tool = make_subagent(
             builder=lambda spec: Agent(
@@ -408,7 +408,7 @@ def confirming_parent(tmp_path):
         )
         return Agent(
             model=MockedModelProvider(parent_responses),
-            tools=[tool, *parent_tools],
+            tools=[tool],
             callback_handler=None,
             session_manager=FileSessionManager("s1", storage_dir=str(tmp_path)),
         )
@@ -425,25 +425,15 @@ def confirming_parent(tmp_path):
     return build, interrupted, executions
 
 
-def _answer(interrupt_id, response="APPROVE"):
-    return [{"interruptResponse": {"interruptId": interrupt_id, "response": response}}]
-
-
-def test_interrupt_is_namespaced_and_resumes_in_process(confirming_parent):
-    _, interrupted, executions = confirming_parent
-    parent, interrupt_id = interrupted()
-    assert interrupt_id.startswith("v1:subagent:t1:")
-    assert set(parent._interrupt_state.context[_INTERRUPTED_TURNS_KEY]) == {"t1"}
-
-    result = parent(_answer(interrupt_id))
-
-    assert str(result).strip() == "parent done"
-    assert executions == ["prod"]
+def _answer(interrupt_id):
+    return [{"interruptResponse": {"interruptId": interrupt_id, "response": "APPROVE"}}]
 
 
 def test_interrupt_resumes_after_parent_is_rebuilt(confirming_parent):
     build, interrupted, executions = confirming_parent
-    _, interrupt_id = interrupted()
+    interrupted_parent, interrupt_id = interrupted()
+    assert interrupt_id.startswith("v1:subagent:t1:")
+    assert set(interrupted_parent._interrupt_state.context[_INTERRUPTED_TURNS_KEY]) == {"t1"}
 
     # Process boundary: every agent is rebuilt and only the session survives.
     parent = build([_text_message("child done")], [_text_message("parent done")])

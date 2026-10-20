@@ -1,6 +1,5 @@
 """Human-in-the-loop interrupt system for agent workflows."""
 
-import logging
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
@@ -10,13 +9,8 @@ if TYPE_CHECKING:
     from .types.interrupt import InterruptResponseContent
     from .types.tools import ToolResult
 
-logger = logging.getLogger(__name__)
-
 _AGENT_STREAM_INTERRUPT_ID_PREFIX = "v1:middleware_agent_stream:"
 """Id prefix for interrupts scoped to a whole invocation pass rather than a single tool call."""
-
-_RESPONSES_KEY = "responses"
-"""Key in ``_InterruptState.context`` holding the responses supplied on the current resume."""
 
 
 @dataclass
@@ -157,7 +151,7 @@ class _InterruptState:
 
             self.interrupts[interrupt_id].response = interrupt_response
 
-        self.context[_RESPONSES_KEY] = contents
+        self.context["responses"] = contents
         self._version += 1
 
     def set_pending_tool_results(self, completed_tool_results: list["ToolResult"]) -> None:

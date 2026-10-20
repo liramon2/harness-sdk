@@ -71,7 +71,7 @@ class _AgentToolAdapter:
         if result.stop_reason == "interrupt" and result.interrupts:
             return list(result.interrupts)
         if result.stop_reason == "cancelled" and child.cancel_signal.is_set():
-            return f"{self.label} was cancelled."
+            return f"{self.label} cancelled"
         return None
 
     def pending_interrupt_ids(self, turn: Any) -> set[str]:

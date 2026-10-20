@@ -351,10 +351,6 @@ def make_subagent(
     Each axis accepts a policy from :mod:`~strands.multiagent.spec` that controls what
     the model sees and can supply. Omitted axes use sensible defaults.
 
-    Child interrupts surface on the parent; answer them with the ``id`` as given. On resume *builder*
-    rebuilds the child and only its messages and state are restored, so a different agent can drop an
-    approval gate.
-
     Raises:
         ValueError: If *max_depth* < 1, *name* or *description* is empty, or a ``Choice`` axis violates
             its constraints (empty options, ``multiple=False`` for tools).

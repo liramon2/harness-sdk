@@ -285,16 +285,10 @@ class _AgentAsTool(AgentTool):
         """Render a completed agent result as tool-result content."""
         if result.structured_output:
             return [{"json": result.structured_output.model_dump(mode="json")}]
-        if self._delegate:
-            return self._delegate_result_content(result)
-        return [{"text": str(result)}]
-
-    @staticmethod
-    def _delegate_result_content(result: Any) -> list[ToolResultContent]:
-        """Return the result content delegated directly to the parent agent."""
-        content = result.message.get("content", [])
+        if not self._delegate:
+            return [{"text": str(result)}]
         tool_result_content: list[ToolResultContent] = []
-        for block in content:
+        for block in result.message.get("content", []):
             if not isinstance(block, dict):
                 continue
             if "text" in block:

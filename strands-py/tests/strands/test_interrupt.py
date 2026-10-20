@@ -1,11 +1,6 @@
 import pytest
 
-from strands.interrupt import (
-    _AGENT_STREAM_INTERRUPT_ID_PREFIX,
-    Interrupt,
-    PendingToolExecution,
-    _InterruptState,
-)
+from strands.interrupt import _AGENT_STREAM_INTERRUPT_ID_PREFIX, Interrupt, PendingToolExecution, _InterruptState
 from strands.types.exceptions import SessionException
 
 

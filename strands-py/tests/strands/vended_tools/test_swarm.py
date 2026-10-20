@@ -55,8 +55,9 @@ def _ctx():
 
 
 async def _run(swarm_tool, **kwargs):
-    """Drain the decorated swarm tool's async generator."""
-    return [event async for event in swarm_tool(**kwargs)]
+    """Drain the tool's async generator; return (streamed events, final result)."""
+    yielded = [event async for event in swarm_tool(**kwargs)]
+    return yielded[:-1], yielded[-1]
 
 
 def _spec(name, **kw):
@@ -151,7 +152,7 @@ class TestMakeSwarm:
 class TestSwarmToolExecution:
     @pytest.mark.asyncio
     async def test_streams_events_and_returns_result(self):
-        """Swarm events surface as ToolStreamEvents and its final text as the tool result."""
+        """Through the decorator: swarm events surface as ToolStreamEvents, final text as the tool result."""
         events = [{"type": "multiagent_node_start", "node_id": "a", "node_type": "agent"}]
         tool_use = {
             "toolUseId": "t1",
@@ -164,6 +165,7 @@ class TestSwarmToolExecution:
             out = [e async for e in swarm.stream(tool_use, invocation_state)]
         # The parent's request_state is not forwarded to children.
         cls.return_value.stream_async.assert_called_once_with("go", invocation_state={"agent": parent, "user_key": "v"})
+        # The decorator also streams the final yield before wrapping it as the result.
         streamed = [e["tool_stream_event"]["data"] for e in out if isinstance(e, ToolStreamEvent)]
         assert streamed == [*events, "writer: Done!"]
         assert isinstance(out[-1], ToolResultEvent)
@@ -194,7 +196,7 @@ class TestSwarmToolExecution:
         ],
     )
     async def test_rejects_invalid_agents(self, agents, kw, match):
-        with _patch(), pytest.raises(ValueError, match=match):
+        with pytest.raises(ValueError, match=match):
             await _run(make_swarm(max_agents=2), task="t", agents=agents, tool_context=_ctx(), **kw)
 
     @pytest.mark.asyncio
