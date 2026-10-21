@@ -18,10 +18,10 @@ import {
   Inherit,
   Open,
   type AgentBuilder,
+  type AgentSpec,
   type Choice,
   type Fixed,
   type Preset,
-  type AgentSpec,
   type ResolveSpecAxes,
 } from '../../multiagent/spec.js'
 import { NodeResultEvent } from '../../multiagent/events.js'
@@ -54,7 +54,10 @@ const UNAVAILABLE_MESSAGE =
 
 /** Options for {@link makeSwarm}. Unset repetitive-handoff limits fall back to the {@link Swarm} defaults. */
 export interface MakeSwarmOptions extends SwarmConfig {
-  /** Turns a resolved spec into an agent. Defaults to a builder that inherits from the parent. */
+  /**
+   * Turns a resolved spec into an agent. Defaults to a builder that inherits from the parent. Called again with
+   * the same spec when an interrupted swarm resumes, so it must give each spec the same agent id.
+   */
   builder?: AgentBuilder
   /** Named roles the model selects via `agent_type`. @defaultValue `{}` */
   presets?: Record<string, Preset>

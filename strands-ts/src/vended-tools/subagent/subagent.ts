@@ -58,7 +58,10 @@ const UNAVAILABLE_MESSAGE =
 
 /** Options for {@link makeSubagent}. */
 export interface MakeSubagentOptions {
-  /** Turns a resolved spec into a child agent. Defaults to a builder that inherits from the parent. */
+  /**
+   * Turns a resolved spec into a child agent. Defaults to a builder that inherits from the parent. Called again
+   * with the same spec when an interrupted child resumes.
+   */
   builder?: AgentBuilder
   /** Named roles the model selects via `agent_type`. @defaultValue `{ generalist: GENERALIST }` */
   presets?: Record<string, Preset>

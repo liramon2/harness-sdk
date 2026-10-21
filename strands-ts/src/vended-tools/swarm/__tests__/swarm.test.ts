@@ -261,6 +261,9 @@ describe('swarm tool', () => {
       const parent = new Agent({ model, tools: [swarm, confirmTool], printer: false })
 
       let result = await parent.invoke('start')
+      expect(result.interrupts?.map((interrupt) => interrupt.id)).toEqual(
+        ['A', 'B'].map((question) => `swarm:p1:tool:c${question}:confirm`)
+      )
       const seen: unknown[] = []
       while (result.stopReason === 'interrupt') {
         const [interrupt] = result.interrupts!

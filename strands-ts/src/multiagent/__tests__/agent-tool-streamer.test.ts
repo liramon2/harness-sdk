@@ -175,11 +175,28 @@ describe('AgentToolStreamer', () => {
     }
   )
 
+  it('restores the stored turn and returns the responses for this call without the prefix', async () => {
+    const child = new Agent({ model: new MockMessageModel(), printer: false })
+    child._interruptState.registerInterrupt(new Interrupt({ id: 'approval', name: 'confirm' }))
+    child._interruptState.activate()
+    const parentState = resumingParent(child.takeSnapshot({ preset: 'session' }))
+    const tool = streamer(parentState)
+
+    const responses = await tool.resume(
+      AGENT_ADAPTER,
+      new Agent({ model: new MockMessageModel(), printer: false }),
+      'x'
+    )
+
+    expect(responses).toEqual([new InterruptResponseContent({ interruptId: 'approval', response: 'approved' })])
+    expect(parentState.context[TURNS_KEY]).toEqual({})
+  })
+
   it.each([
     ['missing', undefined],
     ['not an object', 'garbage'],
     ['missing its data', { data: 'x' }],
-    ['without readable interrupts', { data: { interrupts: { interrupts: 1 } } }],
+    ['without interrupts', { data: { interrupts: { interrupts: 1 } } }],
   ])('sets an error when the stored turn is %s', async (_, turn) => {
     vi.spyOn(logger, 'error').mockImplementation(() => {})
     const tool = streamer(resumingParent(turn))

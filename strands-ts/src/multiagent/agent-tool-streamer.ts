@@ -308,9 +308,10 @@ export class AgentToolStreamer<TResult = unknown> {
       return undefined
     }
 
+    // The restored child owns its turn now; an interrupt stores it again.
+    this._clearInterruptedTurn()
     if (!awaitingResponses) {
-      logger.error(`tool_use_id=<${this._toolUseId}> | cannot resume: the sub-agent turn is not available`)
-      this._clearInterruptedTurn()
+      logger.error(`tool_use_id=<${this._toolUseId}> | interrupted sub-agent turn is not available to resume`)
       this.error = unavailableMessage
       return undefined
     }
@@ -374,7 +375,7 @@ export class AgentToolStreamer<TResult = unknown> {
     return this._interruptState?.context[INTERRUPTED_TURNS_KEY] as Record<string, JSONValue> | undefined
   }
 
-  /** Discards the stored child turn once the child has finished with it. */
+  /** Discards the stored child turn. */
   private _clearInterruptedTurn(): void {
     delete this._turns()?.[this._toolUseId]
   }
