@@ -1267,6 +1267,19 @@ class Graph(MultiAgentBase):
 
         return node_input
 
+    def failure_message(self, error: Exception) -> str:
+        """Describe a fail-fast exception with the failed nodes and the output of the nodes that finished.
+
+        Args:
+            error: The exception raised out of the graph's execution.
+        """
+        failed = sorted(node.node_id for node in self.state.failed_nodes)
+        finished = {node_id: result for node_id, result in self.state.results.items() if node_id not in failed}
+        return (
+            f"Graph node(s) {', '.join(failed) or 'unknown'} failed: {error}. "
+            f"Partial output:\n{GraphResult(results=finished)}"
+        )
+
     def _build_result(self, interrupts: list[Interrupt]) -> GraphResult:
         """Build graph result from current state.
 

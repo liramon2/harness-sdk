@@ -256,13 +256,7 @@ async def _stream_graph(
             else:
                 yield event
     except Exception as error:
-        failed = sorted(node.node_id for node in sdk_graph.state.failed_nodes)
-        results = sdk_graph.state.results
-        finished = {node_id: node_result for node_id, node_result in results.items() if node_id not in failed}
-        raise RuntimeError(
-            f"Graph node(s) {', '.join(failed) or 'unknown'} failed: {error}. "
-            f"Partial output:\n{GraphResult(results=finished)}"
-        ) from error
+        raise RuntimeError(sdk_graph.failure_message(error)) from error
     finally:
         pending.pop(tool_use_id, None)
 

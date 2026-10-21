@@ -345,6 +345,30 @@ async def test_graph_execution_with_failures(mock_strands_tracer, mock_use_span)
 
 
 @pytest.mark.asyncio
+async def test_graph_failure_message(mock_strands_tracer, mock_use_span):
+    failing_agent = create_mock_agent("failing_agent")
+
+    async def mock_stream_failure(*args, **kwargs):
+        yield {"agent_start": True}
+        raise ValueError("Simulated failure")
+
+    failing_agent.stream_async = Mock(side_effect=mock_stream_failure)
+
+    builder = GraphBuilder()
+    builder.add_node(create_mock_agent("success_agent", "Success"), "success_node")
+    builder.add_node(failing_agent, "fail_node")
+    builder.add_edge("success_node", "fail_node")
+    graph = builder.build()
+
+    with pytest.raises(ValueError, match="Simulated failure") as exc_info:
+        await graph.invoke_async("Test partial output")
+
+    tru_message = graph.failure_message(exc_info.value)
+    exp_message = "Graph node(s) fail_node failed: Simulated failure. Partial output:\nsuccess_node: Success"
+    assert tru_message == exp_message
+
+
+@pytest.mark.asyncio
 async def test_graph_edge_cases(mock_strands_tracer, mock_use_span):
     """Test specific edge cases for coverage."""
     # Test entry node execution without dependencies
