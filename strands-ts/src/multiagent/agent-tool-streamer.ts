@@ -121,17 +121,27 @@ export class ChildMultiAgentAdapter implements ChildAdapter<Swarm | Graph, Multi
   }
 
   takeSnapshot(child: Swarm | Graph): Snapshot {
-    return takeSnapshot(child, pendingState(child)._pendingInterruptState)
+    return takeSnapshot(
+      child,
+      (child as unknown as { _pendingInterruptState?: MultiAgentState })._pendingInterruptState
+    )
   }
 
   async restore(child: Swarm | Graph, snapshot: Snapshot | undefined): Promise<boolean> {
-    const holder = pendingState(child)
+    const holder = child as unknown as { _pendingInterruptState?: MultiAgentState }
     if (snapshot !== undefined) {
       const state = new MultiAgentState({ nodeIds: [...child.nodes.keys()] })
       loadSnapshot(child, snapshot, state)
+      const missing = [...state.nodes.keys()].filter((id) => !child.nodes.has(id))
+      if (missing.length > 0) {
+        throw new Error(
+          `node_ids=<${missing.join(',')}> | rebuilt ${this.label} lacks nodes from the stored turn; builder must give each spec the same agent id`
+        )
+      }
       holder._pendingInterruptState = state
     }
-    return hasInterruptedNode(holder._pendingInterruptState)
+    const nodes = holder._pendingInterruptState?.nodes.values() ?? []
+    return [...nodes].some((node) => node.status === Status.INTERRUPTED)
   }
 
   classify(_child: Swarm | Graph, result: MultiAgentResult): Interrupt[] | string | undefined {
@@ -150,15 +160,6 @@ export class ChildMultiAgentAdapter implements ChildAdapter<Swarm | Graph, Multi
     loadStateSerializable(state, (turn as unknown as Snapshot).data.state!)
     return [...state.nodes.values()].flatMap((node) => node.interrupts.map((interrupt) => interrupt.id))
   }
-}
-
-/** Execution state a Graph or Swarm retains between an interrupted run and its resume. */
-function pendingState(child: Swarm | Graph): { _pendingInterruptState?: MultiAgentState } {
-  return child as unknown as { _pendingInterruptState?: MultiAgentState }
-}
-
-function hasInterruptedNode(state: MultiAgentState | undefined): boolean {
-  return state !== undefined && [...state.nodes.values()].some((node) => node.status === Status.INTERRUPTED)
 }
 
 /**
@@ -224,12 +225,34 @@ export class AgentToolStreamer<TResult = unknown> {
     }
 
     const outcome = adapter.classify(child, this.result)
-    if (Array.isArray(outcome)) {
-      this.interrupts = this._raise(adapter, child, outcome)
+    if (!Array.isArray(outcome)) {
+      delete this._turns()?.[this._toolUseId]
+      this.error = outcome
       return
     }
-    this._clearInterruptedTurn()
-    this.error = outcome
+
+    const state = this._interruptState
+    // Without a parent interrupt state there is nothing to resume against, so ids pass through raw.
+    if (state === undefined) {
+      this.interrupts = outcome
+      return
+    }
+    if (this._persistInterruptedTurn) {
+      const turns = (state.context[INTERRUPTED_TURNS_KEY] ??= {}) as Record<string, JSONValue>
+      turns[this._toolUseId] = deepCopy(adapter.takeSnapshot(child) as unknown as JSONValue)
+    }
+    // Registered here, not only when the orchestrator catches the error: the concurrent executor keeps
+    // one InterruptError per batch, so a second interrupting child would otherwise be dropped.
+    this.interrupts = outcome.map((interrupt) =>
+      state.registerInterrupt(
+        new Interrupt({
+          id: `${this._prefix}${interrupt.id}`,
+          name: interrupt.name,
+          ...(interrupt.reason !== undefined && { reason: interrupt.reason }),
+          source: 'tool',
+        })
+      )
+    )
   }
 
   /**
@@ -308,8 +331,9 @@ export class AgentToolStreamer<TResult = unknown> {
       return undefined
     }
 
-    // The restored child owns its turn now; an interrupt stores it again.
-    this._clearInterruptedTurn()
+    // The restored child owns its turn now; an interrupt stores it again. Clearing before the child runs is what
+    // lets a re-interrupt persist, at the cost of losing the turn if the child throws.
+    delete this._turns()?.[this._toolUseId]
     if (!awaitingResponses) {
       logger.error(`tool_use_id=<${this._toolUseId}> | interrupted sub-agent turn is not available to resume`)
       this.error = unavailableMessage
@@ -321,31 +345,6 @@ export class AgentToolStreamer<TResult = unknown> {
           interruptId: r.interruptResponse.interruptId.slice(this._prefix.length),
           response: r.interruptResponse.response,
         })
-    )
-  }
-
-  /** Stores the child's turn and registers its interrupts on the parent, namespaced to this tool call. */
-  private _raise<TChild>(adapter: ChildAdapter<TChild, TResult>, child: TChild, interrupts: Interrupt[]): Interrupt[] {
-    const state = this._interruptState
-    // Without a parent interrupt state there is nothing to resume against, so ids pass through raw.
-    if (state === undefined) {
-      return interrupts
-    }
-    if (this._persistInterruptedTurn) {
-      const turns = (state.context[INTERRUPTED_TURNS_KEY] ??= {}) as Record<string, JSONValue>
-      turns[this._toolUseId] = deepCopy(adapter.takeSnapshot(child) as unknown as JSONValue)
-    }
-    // Registered here, not only when the orchestrator catches the error: the concurrent executor keeps
-    // one InterruptError per batch, so a second interrupting child would otherwise be dropped.
-    return interrupts.map((interrupt) =>
-      state.registerInterrupt(
-        new Interrupt({
-          id: `${this._prefix}${interrupt.id}`,
-          name: interrupt.name,
-          ...(interrupt.reason !== undefined && { reason: interrupt.reason }),
-          source: 'tool',
-        })
-      )
     )
   }
 
@@ -373,10 +372,5 @@ export class AgentToolStreamer<TResult = unknown> {
 
   private _turns(): Record<string, JSONValue> | undefined {
     return this._interruptState?.context[INTERRUPTED_TURNS_KEY] as Record<string, JSONValue> | undefined
-  }
-
-  /** Discards the stored child turn. */
-  private _clearInterruptedTurn(): void {
-    delete this._turns()?.[this._toolUseId]
   }
 }

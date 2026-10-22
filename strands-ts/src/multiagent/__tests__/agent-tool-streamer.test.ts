@@ -18,6 +18,7 @@ import {
 import { MultiAgentResult, MultiAgentState, Status } from '../state.js'
 import { Swarm } from '../swarm.js'
 import type { StopReason } from '../../types/messages.js'
+import { SNAPSHOT_SCHEMA_VERSION } from '../../types/snapshot.js'
 
 const TURNS_KEY = 'subAgentInterruptedTurns'
 
@@ -156,24 +157,41 @@ describe('AgentToolStreamer', () => {
   })
 
   it.each([
-    ['agent', AGENT_ADAPTER, (): JSONValue => ({ interrupts: awaitedAgentState() })],
-    ['multiAgent', MULTI_AGENT_ADAPTER, (): JSONValue => ({ state: awaitedMultiAgentState() })],
-  ] as const)(
-    'raises the interrupts an unloadable %s turn still awaits again and keeps the turn',
-    async (scope, adapter, data) => {
-      vi.spyOn(logger, 'error').mockImplementation(() => {})
-      const turn = { scope, schemaVersion: '0.0', data: data(), appData: {} }
-      const parentState = resumingParent(turn)
-      const tool = new AgentToolStreamer({ interruptState: parentState, toolUseId: 't', namespace: 'test' })
-      const child = scope === 'agent' ? new Agent({ model: new MockMessageModel(), printer: false }) : swarm()
+    [
+      'an unloadable agent turn',
+      AGENT_ADAPTER,
+      { scope: 'agent', schemaVersion: '0.0', data: { interrupts: awaitedAgentState() }, appData: {} },
+      (): unknown => new Agent({ model: new MockMessageModel(), printer: false }),
+    ],
+    [
+      'an unloadable multiAgent turn',
+      MULTI_AGENT_ADAPTER,
+      { scope: 'multiAgent', schemaVersion: '0.0', data: { state: awaitedMultiAgentState() }, appData: {} },
+      swarm,
+    ],
+    [
+      'a multiAgent turn whose nodes the rebuilt swarm lacks',
+      MULTI_AGENT_ADAPTER,
+      {
+        scope: 'multiAgent',
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        data: { orchestratorId: 'swarm', state: awaitedMultiAgentState() },
+        appData: {},
+      },
+      (): unknown =>
+        new Swarm({ id: 'swarm', nodes: [new Agent({ id: 'b', model: new MockMessageModel(), printer: false })] }),
+    ],
+  ] as const)('raises the interrupts %s still awaits again and keeps the turn', async (_, adapter, turn, child) => {
+    vi.spyOn(logger, 'error').mockImplementation(() => {})
+    const parentState = resumingParent(turn)
+    const tool = new AgentToolStreamer({ interruptState: parentState, toolUseId: 't', namespace: 'test' })
 
-      const responses = await tool.resume(adapter as ChildAdapter<unknown, unknown>, child, 'unavailable')
+    const responses = await tool.resume(adapter as ChildAdapter<unknown, unknown>, child(), 'unavailable')
 
-      expect(responses).toBeUndefined()
-      expect(tool.interrupts).toEqual([new Interrupt({ id: 'test:t:approval', name: 'confirm' })])
-      expect((parentState.context[TURNS_KEY] as Record<string, typeof turn>)['t']!.schemaVersion).toBe('0.0')
-    }
-  )
+    expect(responses).toBeUndefined()
+    expect(tool.interrupts).toEqual([new Interrupt({ id: 'test:t:approval', name: 'confirm' })])
+    expect(parentState.context[TURNS_KEY]).toEqual({ t: turn })
+  })
 
   it('restores the stored turn and returns the responses for this call without the prefix', async () => {
     const child = new Agent({ model: new MockMessageModel(), printer: false })
