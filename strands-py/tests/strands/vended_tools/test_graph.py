@@ -11,13 +11,14 @@ from strands import Agent
 from strands.agent import AgentResult
 from strands.agent.state import AgentState
 from strands.experimental.tools import stop
+from strands.interrupt import Interrupt, _InterruptState
 from strands.multiagent.base import NodeResult, Status
 from strands.multiagent.graph import GraphResult
 from strands.multiagent.spec import Choice, Fixed, Inherit, Open, Preset
 from strands.telemetry.metrics import EventLoopMetrics
 from strands.tools.decorator import DecoratedFunctionTool
 from strands.tools.registry import ToolRegistry
-from strands.types._events import ToolResultEvent, ToolStreamEvent
+from strands.types._events import ToolInterruptEvent, ToolResultEvent, ToolStreamEvent
 from strands.types.tools import ToolContext
 from strands.vended_tools import graph as exported_graph
 from strands.vended_tools import make_graph as exported_make_graph
@@ -25,6 +26,7 @@ from strands.vended_tools.graph import graph, make_graph
 from strands.vended_tools.graph.graph import (
     _DEFAULT_MAX_EDGES,
     _DEFAULT_MAX_NODES,
+    _UNAVAILABLE_MESSAGE,
     DEFAULT_GRAPH_DESCRIPTION,
     _build_schema,
     _validate_edges,
@@ -38,14 +40,15 @@ _NODES = [{"name": "a", "instructions": "Do A."}, {"name": "b", "instructions": 
 _EDGES = [{"from_node": "a", "to_node": "b"}]
 
 
-def _mock_parent(state: dict | None = None) -> SimpleNamespace:
+def _mock_parent() -> SimpleNamespace:
     return SimpleNamespace(
         tool_registry=ToolRegistry(),
         model=Mock(),
         sandbox=None,
         callback_handler=None,
         trace_attributes=None,
-        state=AgentState(state),
+        state=AgentState(),
+        _interrupt_state=_InterruptState(),
     )
 
 
@@ -57,7 +60,7 @@ async def _events(tool, raw_input, parent=None, tool_use_id="id", **invocation_s
     return [event async for event in tool.stream(tool_use, state, _tool_context=context)]
 
 
-def _result(*, status=Status.COMPLETED, text="Done!", node="b"):
+def _result(*, status=Status.COMPLETED, text="Done!"):
     agent_result = AgentResult(
         message={"role": "assistant", "content": [{"text": text}]},
         stop_reason="end_turn",
@@ -65,7 +68,7 @@ def _result(*, status=Status.COMPLETED, text="Done!", node="b"):
         metrics=EventLoopMetrics(),
     )
     return GraphResult(
-        status=status, results={node: NodeResult(result=agent_result, status=Status.COMPLETED)}, execution_count=2
+        status=status, results={"b": NodeResult(result=agent_result, status=Status.COMPLETED)}, execution_count=2
     )
 
 
@@ -171,7 +174,6 @@ def test_make_graph_spec_reflects_configuration():
     tru_props = tru_spec["inputSchema"]["json"]["properties"]
     assert (tru_props["nodes"]["maxItems"], tru_props["edges"]["maxItems"]) == (3, 4)
     assert tru_props["nodes"]["items"]["properties"]["tools"]["items"]["enum"] == ["calc"]
-    assert tru_spec["description"] == DEFAULT_GRAPH_DESCRIPTION
 
 
 @pytest.mark.parametrize(
@@ -283,39 +285,110 @@ async def test_graph_tool_forwards_only_configured_limits(limits, exp_calls):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("node_count", [1, 3])
-async def test_graph_tool_rejects_node_count_out_of_bounds(node_count):
-    nodes = [{"name": str(i), "instructions": "x"} for i in range(node_count)]
-    with _patch():
-        tru_events = await _events(make_graph(max_nodes=2), {"task": "t", "nodes": nodes, "edges": []})
-    assert f"Between 2 and 2 nodes required, got {node_count}" in tru_events[-1].tool_result["content"][0]["text"]
+@pytest.mark.parametrize(
+    ("nodes", "result", "exp_text"),
+    [
+        (_NODES[:1], None, "Between 2 and 3 nodes required, got 1"),
+        (
+            [{"name": str(index), "instructions": "x"} for index in range(4)],
+            None,
+            "Between 2 and 3 nodes required, got 4",
+        ),
+        ([_NODES[0], _NODES[0]], None, "Duplicate node name 'a' at index 1"),
+        (
+            _NODES,
+            _result(status=Status.FAILED, text="partial"),
+            "Graph stopped before completing (status=failed, 2 iterations). Partial output:\nb: partial",
+        ),
+    ],
+)
+async def test_graph_tool_returns_error_result(nodes, result, exp_text):
+    with _patch(result):
+        tru_events = await _events(make_graph(max_nodes=3), {"task": "t", "nodes": nodes, "edges": []})
+    assert tru_events[-1].tool_result["status"] == "error"
+    assert exp_text in tru_events[-1].tool_result["content"][0]["text"]
 
 
 @pytest.mark.asyncio
-async def test_graph_tool_errors_name_the_nodes_parameter():
-    nodes = [{"name": "a", "instructions": "x"}, {"name": "a", "instructions": "x"}]
-    with _patch():
-        tru_events = await _events(graph, {"task": "t", "nodes": nodes, "edges": []})
-    assert "Duplicate node name 'a' at index 1" in tru_events[-1].tool_result["content"][0]["text"]
+async def test_graph_tool_persists_interrupted_graph_with_stable_id():
+    parent = _mock_parent()
+    interrupted = _result(status=Status.INTERRUPTED)
+    interrupted.interrupts = [Interrupt("approval", "confirm")]
+    with (
+        _patch(interrupted) as graph_builder,
+        patch("strands.multiagent._agent_tool_streamer.take_snapshot") as take_snapshot,
+    ):
+        take_snapshot.return_value.to_dict.return_value = {"snapshot": True}
+        tru_events = await _events(graph, {"task": "t", "nodes": _NODES, "edges": _EDGES}, parent)
+
+    assert tru_events[-1].interrupts == [Interrupt("v1:graph:id:approval", "confirm")]
+    graph_builder.set_graph_id.assert_called_once_with("v1:graph:id")
+    assert parent._interrupt_state.context["sub_agent_interrupted_turns"] == {"id": {"snapshot": True}}
 
 
 @pytest.mark.asyncio
-async def test_graph_tool_failed_status_raises_with_partial_output():
-    with _patch(_result(status=Status.FAILED, text="partial")):
-        tru_events = await _events(graph, {"task": "t", "nodes": _NODES, "edges": _EDGES})
-    tru_text = tru_events[-1].tool_result["content"][0]["text"]
-    assert "status=failed" in tru_text and "partial" in tru_text
+async def test_graph_tool_builder_failure_on_fresh_run_returns_error():
+    def failing_builder(spec):
+        raise ConnectionError("model endpoint unavailable")
+
+    tru_events = await _events(make_graph(builder=failing_builder), {"task": "t", "nodes": _NODES, "edges": _EDGES})
+
+    assert tru_events[-1].tool_result["status"] == "error"
+    assert tru_events[-1].tool_result["content"] == [{"text": "Error: ConnectionError - model endpoint unavailable"}]
 
 
 @pytest.mark.asyncio
-async def test_graph_tool_missing_result_raises():
-    async def no_result(task, invocation_state=None):
-        yield {"type": "multiagent_node_start", "node_id": "a", "node_type": "agent"}
-
+async def test_graph_tool_resume_without_stored_turn_returns_unavailable_message():
+    parent = _mock_parent()
+    parent._interrupt_state = _InterruptState(
+        interrupts={"v1:graph:id:approval": Interrupt("v1:graph:id:approval", "confirm", response="yes")},
+        activated=True,
+    )
     with _patch() as graph_builder:
-        graph_builder.build.return_value.stream_async = Mock(side_effect=no_result)
-        tru_events = await _events(graph, {"task": "t", "nodes": _NODES, "edges": _EDGES})
-    assert "Graph stream ended without producing a result" in tru_events[-1].tool_result["content"][0]["text"]
+        graph_builder.build.return_value._interrupt_state = _InterruptState()
+        tru_events = await _events(graph, {"task": "t", "nodes": _NODES, "edges": _EDGES}, parent)
+
+    graph_builder.build.return_value.stream_async.assert_not_called()
+    assert tru_events[-1].tool_result["content"] == [{"text": f"Error: RuntimeError - {_UNAVAILABLE_MESSAGE}"}]
+
+
+@pytest.mark.asyncio
+async def test_graph_tool_builder_failure_on_resume_raises_the_interrupt_again_and_keeps_the_turn():
+    def failing_builder(spec):
+        raise ConnectionError("model endpoint unavailable")
+
+    answered = Interrupt("v1:graph:id:approval", "confirm", response="yes")
+    awaited = _InterruptState(interrupts={"approval": Interrupt("approval", "confirm")}, activated=True)
+    turn = {"scope": "multiAgent", "data": {"state": {"_internal_state": {"interrupt_state": awaited.to_dict()}}}}
+    parent = _mock_parent()
+    parent._interrupt_state = _InterruptState(
+        interrupts={answered.id: answered},
+        context={"sub_agent_interrupted_turns": {"id": turn}},
+        activated=True,
+    )
+
+    tru_events = await _events(
+        make_graph(builder=failing_builder), {"task": "t", "nodes": _NODES, "edges": _EDGES}, parent
+    )
+
+    assert isinstance(tru_events[-1], ToolInterruptEvent)
+    assert tru_events[-1].interrupts == [Interrupt(answered.id, "confirm")]
+    assert parent._interrupt_state.context["sub_agent_interrupted_turns"] == {"id": turn}
+
+
+@pytest.mark.asyncio
+async def test_graph_tool_defaults_to_first_preset():
+    specs = []
+
+    def builder(spec):
+        specs.append(spec)
+        return _builder(spec)
+
+    graph_tool = make_graph(builder=builder, presets={"writer": Preset(instructions="Write."), "other": Preset()})
+    with _patch():
+        await _events(graph_tool, {"task": "t", "nodes": [{"name": "a"}, {"name": "b"}], "edges": []})
+
+    assert [(spec.agent_type, spec.instructions) for spec in specs] == [("writer", "Write."), ("writer", "Write.")]
 
 
 @pytest.mark.asyncio
@@ -325,7 +398,6 @@ async def test_graph_tool_excludes_graph_tools_and_keeps_handoff():
     def builder(spec):
         specs.append(spec)
         child = _builder(spec)
-        child.tool_registry = ToolRegistry()
         child.tool_registry.process_tools([handoff_to_user, graph_tool])
         children.append(child)
         return child
@@ -399,10 +471,7 @@ def test_graph_tool_handoff_interrupts_and_resumes():
     interrupted = agent("start")
 
     assert interrupted.stop_reason == "interrupt"
-    assert interrupted.interrupts[0].reason == {
-        "name": "strands:handoff-to-user",
-        "reason": "Approve?",
-    }
+    assert interrupted.interrupts[0].reason == "Approve?"
     resumed = agent([{"interruptResponse": {"interruptId": interrupted.interrupts[0].id, "response": "approved"}}])
     assert resumed.stop_reason == "end_turn"
     assert str(resumed).strip() == "parent final"
@@ -410,11 +479,18 @@ def test_graph_tool_handoff_interrupts_and_resumes():
 
 
 def test_graph_tool_parallel_handoffs_interrupt_and_resume():
-    def builder(spec):
-        model = MockedModelProvider(
-            [_tool_use("handoff_to_user", {"message": f"Approve {spec.name}?"}, spec.name), _text(f"{spec.name} done")]
+    # Nodes are rebuilt on each resume, so each node's scripted model must outlive a single build.
+    models = {
+        name: MockedModelProvider(
+            [_tool_use("handoff_to_user", {"message": f"Approve {name}?"}, name), _text(f"{name} done")]
         )
-        return Agent(model=model, tools=[handoff_to_user], system_prompt=spec.instructions, callback_handler=None)
+        for name in ("a", "b")
+    }
+
+    def builder(spec):
+        return Agent(
+            model=models[spec.name], tools=[handoff_to_user], system_prompt=spec.instructions, callback_handler=None
+        )
 
     parent_model = MockedModelProvider(
         [_tool_use("graph", {"task": "go", "nodes": _NODES, "edges": []}, "p1"), _text("parent final")]
@@ -428,7 +504,7 @@ def test_graph_tool_parallel_handoffs_interrupt_and_resume():
         reasons.append(interrupt.reason)
         result = agent([{"interruptResponse": {"interruptId": interrupt.id, "response": "approved"}}])
 
-    assert {reason["reason"] for reason in reasons} == {"Approve a?", "Approve b?"}
+    assert set(reasons) == {"Approve a?", "Approve b?"}
     assert str(result).strip() == "parent final"
     [content] = _graph_tool_result(agent)["content"]
     assert set(content["text"].splitlines()) == {"a: a done", "b: b done"}

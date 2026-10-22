@@ -899,9 +899,10 @@ Full API reference: [TypeScript](https://github.com/strands-agents/harness-sdk/b
 Lets your agent design and run a team of sub-agents as a [Graph](../multi-agent/graph.mdx). The model supplies a `task`, a list of `nodes` (each with a unique `name` and its own `instructions`), and `edges` that order them. Nodes with no upstream nodes start in parallel, and each node receives its upstream outputs.
 
 Nodes inherit the caller's model and tools, including MCP tools, except graph tools. Child
-interrupts pause the tool call and resume with the user's response. Interrupted graphs stay in
-memory, so they cannot resume after a process restart. By default, a call times out after 900
-seconds and each node after 300 seconds. A running graph cannot be cancelled from the parent agent.
+interrupts pause the tool call and resume with the user's response. An interrupted graph
+is saved in the parent agent's interrupt state, so it can resume after the parent is
+restored from a snapshot or session. By default, a call times out after 900 seconds and
+each node after 300 seconds. A running graph cannot be cancelled from the parent agent.
 
 **Example:**
 

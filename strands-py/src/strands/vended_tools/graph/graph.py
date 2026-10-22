@@ -12,13 +12,14 @@ from __future__ import annotations
 import logging
 import weakref
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
+from urllib.parse import quote
 
 from typing_extensions import Required, TypedDict
 
-from ...interrupt import Interrupt
-from ...multiagent.base import Status
-from ...multiagent.graph import Graph, GraphBuilder, GraphResult
+from ...interrupt import InterruptException
+from ...multiagent._agent_tool_streamer import _AgentToolStreamer, _ChildMultiAgentAdapter
+from ...multiagent.graph import GraphBuilder
 from ...multiagent.spec import (
     AgentBuilder,
     Choice,
@@ -31,7 +32,6 @@ from ...multiagent.spec import (
     _to_schema_properties,
 )
 from ...tools.decorator import tool
-from ...types.interrupt import InterruptResponseContent
 from ...types.multiagent import MultiAgentInput
 from ...types.tools import ToolContext
 
@@ -73,6 +73,13 @@ _DEFAULT_EXECUTION_TIMEOUT = 900.0
 _DEFAULT_NODE_TIMEOUT = 300.0
 """Timeout in seconds for one node execution."""
 
+_GRAPH_ADAPTER = _ChildMultiAgentAdapter(label="Graph")
+
+_UNAVAILABLE_MESSAGE = (
+    "Graph did NOT run and the response was NOT applied: its interrupted turn is not available. "
+    "Do not report the task as completed; if it is still needed, start the graph again."
+)
+
 # Every graph tool created, so children lose all of them regardless of name or instance.
 _GRAPH_TOOLS: weakref.WeakSet[DecoratedFunctionTool] = weakref.WeakSet()
 
@@ -98,6 +105,9 @@ def make_graph(
     Each node spec from the model is resolved through the authority-mode system
     (see :mod:`~strands.multiagent.spec`), then built via ``builder``. A running graph
     cannot be cancelled from the parent agent.
+
+    A child's interrupt is surfaced as an interrupt of this tool and can be resumed after a
+    parent-agent snapshot restore.
 
     Args:
         name: Tool name shown to the model.
@@ -149,8 +159,6 @@ def make_graph(
         max_edges=max_edges,
     )
 
-    pending: dict[str, tuple[Graph, list[Interrupt]]] = {}
-
     @tool(name=name, description=description, inputSchema={"json": input_schema}, context="tool_context")
     async def graph_tool(
         task: str,
@@ -167,26 +175,27 @@ def make_graph(
             tool_context: Injected by the framework. Not user-facing.
         """
         tool_use_id = tool_context.tool_use["toolUseId"]
-        graph_input: MultiAgentInput
-        if tool_use_id in pending:
-            sdk_graph, interrupts = pending[tool_use_id]
-            graph_input = _interrupt_responses(tool_context, interrupts)
-        else:
-            build = builder or _default_builder(tool_context.agent)
-            specs = _resolve_specs(
-                nodes,
-                presets=presets,
-                default_preset=default_preset,
-                instructions=instructions,
-                tools=tools,
-                model=model,
-                label="node",
-            )
-            if not 2 <= len(specs) <= max_nodes:
-                raise ValueError(f"Between 2 and {max_nodes} nodes required, got {len(specs)}")
-            validated_edges = _validate_edges(edges, [spec.name for spec in specs if spec.name], max_edges=max_edges)
+        tool_streamer = _AgentToolStreamer(
+            interrupt_state=getattr(tool_context.agent, "_interrupt_state", None),
+            tool_use_id=tool_use_id,
+            namespace="v1:graph",
+        )
+        build = builder or _default_builder(tool_context.agent)
+        specs = _resolve_specs(
+            nodes,
+            presets=presets,
+            default_preset=default_preset,
+            instructions=instructions,
+            tools=tools,
+            model=model,
+            label="node",
+        )
+        if not 2 <= len(specs) <= max_nodes:
+            raise ValueError(f"Between 2 and {max_nodes} nodes required, got {len(specs)}")
+        validated_edges = _validate_edges(edges, [spec.name for spec in specs if spec.name], max_edges=max_edges)
 
-            graph_builder = GraphBuilder()
+        graph_builder = GraphBuilder()
+        try:
             for spec in specs:
                 child = build(spec)
                 for tool_name, child_tool in list(child.tool_registry.registry.items()):
@@ -194,27 +203,43 @@ def make_graph(
                         del child.tool_registry.registry[tool_name]
                         child.tool_registry.dynamic_tools.pop(tool_name, None)
                 graph_builder.add_node(child, node_id=spec.name)
-            for from_node, to_node in validated_edges:
-                graph_builder.add_edge(from_node, to_node)
+        except Exception as error:
+            if not tool_streamer.is_resuming():
+                raise
+            logger.warning("tool_use_id=<%s> | failed to rebuild interrupted graph: %s", tool_use_id, error)
+            tool_streamer.resume(_GRAPH_ADAPTER, None, _UNAVAILABLE_MESSAGE)
+            _raise_unfinished(tool_streamer)
+        for from_node, to_node in validated_edges:
+            graph_builder.add_edge(from_node, to_node)
 
-            if max_node_executions is not None:
-                graph_builder.set_max_node_executions(max_node_executions)
-            if execution_timeout is not None:
-                graph_builder.set_execution_timeout(execution_timeout)
-            if node_timeout is not None:
-                graph_builder.set_node_timeout(node_timeout)
+        graph_builder.set_graph_id(f"v1:graph:{quote(tool_use_id, safe='')}")
+        if max_node_executions is not None:
+            graph_builder.set_max_node_executions(max_node_executions)
+        if execution_timeout is not None:
+            graph_builder.set_execution_timeout(execution_timeout)
+        if node_timeout is not None:
+            graph_builder.set_node_timeout(node_timeout)
 
-            sdk_graph = graph_builder.build()
-            graph_input = task
-            logger.info(
-                "task=<%s>, nodes=<%d>, edges=<%d> | starting graph",
-                task[:120],
-                len(specs),
-                len(validated_edges),
-            )
+        sdk_graph = graph_builder.build()
+        graph_input: MultiAgentInput = task
+        if tool_streamer.is_resuming():
+            resumed = tool_streamer.resume(_GRAPH_ADAPTER, sdk_graph, _UNAVAILABLE_MESSAGE)
+            if resumed is None:
+                _raise_unfinished(tool_streamer)
+            graph_input = resumed
 
-        async for event in _stream_graph(sdk_graph, graph_input, tool_context, pending):
-            yield event
+        logger.info("task=<%s>, nodes=<%d>, edges=<%d> | starting graph", task[:120], len(specs), len(validated_edges))
+        # Drop request_state so a child's stop can't halt the parent.
+        child_state = {key: value for key, value in tool_context.invocation_state.items() if key != "request_state"}
+        source = sdk_graph.stream_async(graph_input, invocation_state=child_state)
+        try:
+            async for event in tool_streamer.stream(_GRAPH_ADAPTER, sdk_graph, source):
+                yield event
+        except Exception as error:
+            raise RuntimeError(sdk_graph.failure_message(error)) from error
+        if tool_streamer.error is not None or tool_streamer.interrupts is not None:
+            _raise_unfinished(tool_streamer)
+        yield str(tool_streamer.result)
 
     _GRAPH_TOOLS.add(graph_tool)
     return graph_tool
@@ -223,55 +248,12 @@ def make_graph(
 # ---- Internals ----
 
 
-def _interrupt_responses(tool_context: ToolContext, interrupts: list[Interrupt]) -> list[InterruptResponseContent]:
-    """Map user responses to the graph's pending interrupts."""
-    return [
-        {
-            "interruptResponse": {
-                "interruptId": interrupt.id,
-                "response": tool_context.interrupt(
-                    interrupt.id,
-                    reason={"name": interrupt.name, "reason": interrupt.reason},
-                ),
-            }
-        }
-        for interrupt in interrupts
-    ]
-
-
-async def _stream_graph(
-    sdk_graph: Graph,
-    graph_input: MultiAgentInput,
-    tool_context: ToolContext,
-    pending: dict[str, tuple[Graph, list[Interrupt]]],
-) -> AsyncGenerator[dict[str, Any] | str, None]:
-    """Stream graph events and retain interrupted graphs for resume."""
-    tool_use_id = tool_context.tool_use["toolUseId"]
-    child_state = {key: value for key, value in tool_context.invocation_state.items() if key != "request_state"}
-    result: GraphResult | None = None
-    try:
-        async for event in sdk_graph.stream_async(graph_input, invocation_state=child_state):
-            if event.get("type") == "multiagent_result":
-                result = event["result"]
-            else:
-                yield event
-    except Exception as error:
-        raise RuntimeError(sdk_graph.failure_message(error)) from error
-    finally:
-        pending.pop(tool_use_id, None)
-
-    if result is None:
-        raise RuntimeError("Graph stream ended without producing a result")
-    if result.status == Status.INTERRUPTED:
-        pending[tool_use_id] = (sdk_graph, list(result.interrupts))
-        first = result.interrupts[0]
-        tool_context.interrupt(first.id, reason={"name": first.name, "reason": first.reason})
-    if result.status != Status.COMPLETED:
-        raise RuntimeError(
-            f"Graph stopped before completing (status={result.status.value}, "
-            f"{result.execution_count} node executions). Partial output:\n{result}"
-        )
-    yield str(result)
+def _raise_unfinished(tool_streamer: _AgentToolStreamer) -> NoReturn:
+    """Raise an unfinished streamer terminal state."""
+    if tool_streamer.interrupts:
+        # The decorator surfaces a single interrupt, so the rest are raised on later resumes.
+        raise InterruptException(tool_streamer.interrupts[0])
+    raise RuntimeError(tool_streamer.error)
 
 
 def _validate_limits(
