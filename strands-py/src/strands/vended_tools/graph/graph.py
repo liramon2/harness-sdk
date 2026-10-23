@@ -12,14 +12,13 @@ from __future__ import annotations
 import logging
 import weakref
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from typing_extensions import Required, TypedDict
 
-from ...interrupt import InterruptException
 from ...multiagent._agent_tool_streamer import _AgentToolStreamer, _ChildMultiAgentAdapter
-from ...multiagent.graph import GraphBuilder
+from ...multiagent.graph import GraphBuilder, GraphResult
 from ...multiagent.spec import (
     AgentBuilder,
     Choice,
@@ -179,6 +178,7 @@ def make_graph(
             interrupt_state=getattr(tool_context.agent, "_interrupt_state", None),
             tool_use_id=tool_use_id,
             namespace="v1:graph",
+            raise_unfinished=True,
         )
         build = builder or _default_builder(tool_context.agent)
         specs = _resolve_specs(
@@ -208,7 +208,7 @@ def make_graph(
                 raise
             logger.warning("tool_use_id=<%s> | failed to rebuild interrupted graph: %s", tool_use_id, error)
             tool_streamer.resume(_GRAPH_ADAPTER, None, _UNAVAILABLE_MESSAGE)
-            _raise_unfinished(tool_streamer)
+            raise
         for from_node, to_node in validated_edges:
             graph_builder.add_edge(from_node, to_node)
 
@@ -221,12 +221,8 @@ def make_graph(
             graph_builder.set_node_timeout(node_timeout)
 
         sdk_graph = graph_builder.build()
-        graph_input: MultiAgentInput = task
-        if tool_streamer.is_resuming():
-            resumed = tool_streamer.resume(_GRAPH_ADAPTER, sdk_graph, _UNAVAILABLE_MESSAGE)
-            if resumed is None:
-                _raise_unfinished(tool_streamer)
-            graph_input = resumed
+        resumed = tool_streamer.resume(_GRAPH_ADAPTER, sdk_graph, _UNAVAILABLE_MESSAGE)
+        graph_input: MultiAgentInput = task if resumed is None else resumed
 
         logger.info("task=<%s>, nodes=<%d>, edges=<%d> | starting graph", task[:120], len(specs), len(validated_edges))
         # Drop request_state so a child's stop can't halt the parent.
@@ -236,9 +232,16 @@ def make_graph(
             async for event in tool_streamer.stream(_GRAPH_ADAPTER, sdk_graph, source):
                 yield event
         except Exception as error:
-            raise RuntimeError(sdk_graph.failure_message(error)) from error
-        if tool_streamer.error is not None or tool_streamer.interrupts is not None:
-            _raise_unfinished(tool_streamer)
+            # The streamer's own interrupt or error is already model-facing.
+            if tool_streamer.interrupts is not None or tool_streamer.error is not None:
+                raise
+            failed = sorted(node.node_id for node in sdk_graph.state.failed_nodes)
+            results = sdk_graph.state.results
+            finished = {node_id: node_result for node_id, node_result in results.items() if node_id not in failed}
+            raise RuntimeError(
+                f"Graph node(s) {', '.join(failed) or 'unknown'} failed: {error}. "
+                f"Partial output:\n{GraphResult(results=finished)}"
+            ) from error
         yield str(tool_streamer.result)
 
     _GRAPH_TOOLS.add(graph_tool)
@@ -246,14 +249,6 @@ def make_graph(
 
 
 # ---- Internals ----
-
-
-def _raise_unfinished(tool_streamer: _AgentToolStreamer) -> NoReturn:
-    """Raise an unfinished streamer terminal state."""
-    if tool_streamer.interrupts:
-        # The decorator surfaces a single interrupt, so the rest are raised on later resumes.
-        raise InterruptException(tool_streamer.interrupts[0])
-    raise RuntimeError(tool_streamer.error)
 
 
 def _validate_limits(
