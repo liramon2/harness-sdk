@@ -29,7 +29,7 @@ import type { MultiAgentInput } from '../../multiagent/multiagent.js'
 import type { MultiAgentResult, NodeResult } from '../../multiagent/state.js'
 import { Swarm, type SwarmConfig } from '../../multiagent/swarm.js'
 import { tool } from '../../tools/tool-factory.js'
-import type { InvokableTool, Tool, ToolContext } from '../../tools/tool.js'
+import type { InvokableTool, Tool } from '../../tools/tool.js'
 import type { JSONSchema, JSONValue } from '../../types/json.js'
 import {
   DEFAULT_SWARM_DESCRIPTION,
@@ -176,7 +176,26 @@ export function makeSwarm({
         swarmInput = resumed
       }
       logger.debug(`task=<${task.slice(0, 120)}>, agents=<${agents.length}> | starting swarm`)
-      return yield* streamSwarm(swarm, swarmInput, toolContext, streamer)
+      // Step and time limits throw, so node results are collected as they stream to keep the partial output.
+      const nodeResults: NodeResult[] = []
+      const { invocationState, cancelSignal } = toolContext
+      const gen = swarm.stream(swarmInput, { invocationState: { ...invocationState }, cancelSignal })
+      try {
+        for await (const event of streamer.stream(SWARM_ADAPTER, swarm, gen)) {
+          if (event instanceof NodeResultEvent) nodeResults.push(event.result)
+          yield event as unknown as JSONValue
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`Swarm stopped before completing (${message}). Partial output:\n${renderOutput(nodeResults)}`, {
+          cause: error,
+        })
+      }
+
+      if (streamer.interrupts !== undefined || streamer.error !== undefined) {
+        raiseUnfinished(streamer)
+      }
+      return renderOutput(streamer.result!.results)
     },
   })
   SWARM_TOOLS.add(swarmTool)
@@ -268,41 +287,6 @@ function buildAgents(specs: AgentSpec[], builder: AgentBuilder): Agent[] {
     }
     return agent
   })
-}
-
-/**
- * Streams the swarm's events and returns its output as the tool result.
- *
- * @returns One `name: output` line per participating agent.
- * @throws InterruptError if the swarm is interrupted.
- * @throws Error with the partial output if the swarm does not complete.
- */
-async function* streamSwarm(
-  swarm: Swarm,
-  swarmInput: MultiAgentInput,
-  toolContext: ToolContext,
-  streamer: AgentToolStreamer<MultiAgentResult>
-): AsyncGenerator<JSONValue, string> {
-  const { invocationState, cancelSignal } = toolContext
-  // Step and time limits throw, so node results are collected as they stream to keep the partial output.
-  const nodeResults: NodeResult[] = []
-  const gen = swarm.stream(swarmInput, { invocationState: { ...invocationState }, cancelSignal })
-  try {
-    for await (const event of streamer.stream(SWARM_ADAPTER, swarm, gen)) {
-      if (event instanceof NodeResultEvent) nodeResults.push(event.result)
-      yield event as unknown as JSONValue
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Swarm stopped before completing (${message}). Partial output:\n${renderOutput(nodeResults)}`, {
-      cause: error,
-    })
-  }
-
-  if (streamer.interrupts !== undefined || streamer.error !== undefined) {
-    raiseUnfinished(streamer)
-  }
-  return renderOutput(streamer.result!.results)
 }
 
 /**
