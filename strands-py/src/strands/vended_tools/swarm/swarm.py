@@ -199,8 +199,8 @@ def make_swarm(
             logger.warning(
                 "tool_use_id=<%s> | failed to rebuild interrupted swarm: %s", tool_context.tool_use["toolUseId"], error
             )
+            # Always raises: a missing child leaves the streamer unfinished.
             tool_streamer.resume(_SWARM_ADAPTER, None, _UNAVAILABLE_MESSAGE)
-            raise
 
         sdk_swarm = Swarm(
             id=f"v1:swarm:{quote(tool_context.tool_use['toolUseId'], safe='')}",

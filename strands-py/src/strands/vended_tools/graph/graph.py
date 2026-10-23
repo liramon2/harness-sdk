@@ -207,8 +207,8 @@ def make_graph(
             if not tool_streamer.is_resuming():
                 raise
             logger.warning("tool_use_id=<%s> | failed to rebuild interrupted graph: %s", tool_use_id, error)
+            # Always raises: a missing child leaves the streamer unfinished.
             tool_streamer.resume(_GRAPH_ADAPTER, None, _UNAVAILABLE_MESSAGE)
-            raise
         for from_node, to_node in validated_edges:
             graph_builder.add_edge(from_node, to_node)
 
