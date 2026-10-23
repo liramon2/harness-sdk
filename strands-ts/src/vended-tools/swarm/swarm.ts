@@ -178,8 +178,12 @@ export function makeSwarm({
       logger.debug(`task=<${task.slice(0, 120)}>, agents=<${agents.length}> | starting swarm`)
       // Step and time limits throw, so node results are collected as they stream to keep the partial output.
       const nodeResults: NodeResult[] = []
-      const { invocationState, cancelSignal } = toolContext
-      const gen = swarm.stream(swarmInput, { invocationState: { ...invocationState }, cancelSignal })
+      const { invocationState, cancelSignal, invocationContext } = toolContext
+      const gen = swarm.stream(swarmInput, {
+        invocationState: { ...invocationState },
+        cancelSignal,
+        ...(invocationContext && { invocationContext }),
+      })
       try {
         for await (const event of streamer.stream(SWARM_ADAPTER, swarm, gen)) {
           if (event instanceof NodeResultEvent) nodeResults.push(event.result)

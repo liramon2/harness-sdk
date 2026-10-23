@@ -149,7 +149,9 @@ export class ChildMultiAgentAdapter implements ChildAdapter<Swarm | Graph, Multi
       return [...result.interrupts]
     }
     if (result.status !== Status.COMPLETED) {
-      const reason = result.error ? `: ${result.error.message}` : ''
+      // A limit stop fails the node, not the orchestrator, so fall back to the first failed node's error.
+      const error = result.error ?? result.results.find((nodeResult) => nodeResult.status === Status.FAILED)?.error
+      const reason = error ? `: ${error.message}` : ''
       return `${this.label} stopped before completing (status=${result.status}${reason}). Partial output:\n${this._render(result)}`
     }
     return undefined
