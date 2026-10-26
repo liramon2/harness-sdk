@@ -227,7 +227,9 @@ def make_graph(
         logger.info("task=<%s>, nodes=<%d>, edges=<%d> | starting graph", task[:120], len(specs), len(validated_edges))
         # Drop request_state so a child's stop can't halt the parent.
         child_state = {key: value for key, value in tool_context.invocation_state.items() if key != "request_state"}
-        source = sdk_graph.stream_async(graph_input, invocation_state=child_state)
+        source = sdk_graph.stream_async(
+            graph_input, invocation_state=child_state, invocation_context=tool_context.invocation_context
+        )
         try:
             async for event in tool_streamer.stream(_GRAPH_ADAPTER, sdk_graph, source):
                 yield event

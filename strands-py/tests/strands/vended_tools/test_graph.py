@@ -83,7 +83,7 @@ def _builder(spec):
 def _patch(result=None, events=()):
     """Patch GraphBuilder and _default_builder; the built graph streams ``events`` then ``result``."""
 
-    async def stream(task, invocation_state=None):
+    async def stream(task, invocation_state=None, invocation_context=None):
         for event in events:
             yield event
         yield {"type": "multiagent_result", "result": result or _result()}
@@ -250,7 +250,7 @@ async def test_graph_tool_streams_events_and_returns_result():
 
     # The parent's request_state is not forwarded to children.
     graph_builder.build.return_value.stream_async.assert_called_once_with(
-        "go", invocation_state={"agent": parent, "user_key": "v"}
+        "go", invocation_state={"agent": parent, "user_key": "v"}, invocation_context=None
     )
     assert [c.kwargs["node_id"] for c in graph_builder.add_node.call_args_list] == ["a", "b"]
     graph_builder.add_edge.assert_called_once_with("a", "b")
