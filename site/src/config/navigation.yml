@@ -404,6 +404,7 @@ sidebar:
                   - docs/user-guide/sdk/tools/vended-tools/python-repl
                   - docs/user-guide/sdk/tools/vended-tools/subagent
                   - docs/user-guide/sdk/tools/vended-tools/swarm
+                  - docs/user-guide/sdk/tools/vended-tools/graph
           - label: Memory
             addedDate: 2026-06-17
             items:

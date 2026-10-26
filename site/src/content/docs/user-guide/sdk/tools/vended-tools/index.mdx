@@ -37,6 +37,7 @@ Each tool is imported from its own subpath under `@strands-agents/sdk/vended-too
 | [Python REPL](python-repl.mdx) | Execute Python code through the agent's sandbox | Python, TypeScript (Node.js, Unix/Linux/macOS) |
 | [Subagent](subagent.mdx) | Delegate a self-contained task to a child agent | Python, TypeScript (Node.js, browsers) |
 | [Swarm](swarm.mdx) | Spin up a team of agents that collaborate via the swarm pattern | Python, TypeScript (Node.js, browsers) |
+| [Graph](graph.mdx) | Run a team of sub-agents as a directed acyclic graph designed by the model | Python |
 
 ## Axis policies
 
@@ -49,7 +50,7 @@ Some vended tools let the model configure child agents at runtime. Axis policies
 | <Syntax py="Open()" ts="new Open()" /> | Model writes a free-form value | Yes (string) |
 | <Syntax py="Choice([...], multiple=True)" ts="new Choice([...], true)" /> | Model picks from a set | Yes (enum) |
 
-Use `Option` inside a `Choice` to map model-facing names to runtime values. Bundle axis defaults into a `Preset` that the model selects via `agent_type`.
+Use `Option` inside a `Choice` to map model-facing names to runtime values. Bundle axis defaults into a `Preset` that the model selects via `agent_type`. When the model omits both `agent_type` and `instructions`, the child uses <Syntax py="default_preset" ts="defaultPreset" />, or the first preset if none is set.
 
 Tools that accept axis policies use a default builder to turn resolved specs into child agents. By default, it produces child agents that inherit the parent's tools, model, and interventions, so a child's tool calls go through the same approval and authorization checks as the parent's. Each child gets <Syntax py='context_manager="auto"' ts="contextManager: 'auto'" /> (unless its model is stateful) in place of the parent's context-management tools, and accesses the parent's long-term memory through inherited memory tools.
 

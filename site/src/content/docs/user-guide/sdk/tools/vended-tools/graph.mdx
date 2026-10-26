@@ -1,0 +1,59 @@
+---
+title: Graph
+description: "Vended tool that runs a team of sub-agents as a directed acyclic graph designed by the model."
+tags: [tool-authoring]
+sourceLinks:
+  - path: strands-py/src/strands/vended_tools/graph/graph.py
+---
+
+Lets your agent design and run a team of sub-agents as a [Graph](../../multi-agent/graph.mdx). The model supplies a `task`, a list of `nodes` (each with a unique `name` and its own `instructions`), and `edges` that order them. Nodes with no upstream nodes start in parallel, and each node receives its upstream outputs.
+
+Nodes inherit the caller's model and tools, including MCP tools, except graph tools. Child
+interrupts pause the tool call and resume with the user's response. An interrupted graph
+is saved in the parent agent's interrupt state, so it can resume after the parent is
+restored from a snapshot or session. By default, a call times out after 900 seconds and
+each node after 300 seconds. A running graph cannot be cancelled from the parent agent.
+
+**Example:**
+
+```python
+from strands import Agent
+from strands.vended_tools import graph, http_request
+
+agent = Agent(tools=[graph, http_request])
+agent("Research three competing vector databases in parallel, then write a comparison table.")
+```
+
+Use `make_graph` to set limits (`max_nodes`, `max_edges`, `max_node_executions`,
+`execution_timeout`, `node_timeout`), build each node agent yourself with `builder`, or control
+what the model configures on each node with [axis policies](index.mdx#axis-policies) over `instructions`,
+`tools`, and `model`.
+
+**Custom configuration:**
+
+```python
+from strands import Agent
+from strands.multiagent import Choice, Preset
+from strands.vended_tools import file_editor, http_request, make_graph
+
+team = make_graph(
+    presets={
+        "researcher": Preset(
+            instructions="Gather facts from the web and cite every source.",
+            tools=["http_request"],
+            description="Finds and summarizes sources.",
+        ),
+        "writer": Preset(
+            instructions="Turn upstream findings into clear prose.",
+            tools=["file_editor"],
+            description="Drafts the final document.",
+        ),
+    },
+    tools=Choice(["http_request", "file_editor"], multiple=True),
+    max_nodes=6,
+    max_edges=10,
+    execution_timeout=600,
+    node_timeout=120,
+)
+agent = Agent(tools=[team, http_request, file_editor])
+```
