@@ -49,21 +49,21 @@ The default tool, produced by `makeGraph()`: no presets, free-form `instructions
 
 ### `makeGraph(options?)`
 
-| Option          | Type                         | Default                     | Description                                                                                           |
-| --------------- | ---------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `builder`       | `(spec: AgentSpec) => Agent` | (inherits from parent)      | Turns a resolved spec into an agent. Its `id` is the node id: unique per call, stable across resumes. |
-| `presets`       | `Record<string, Preset>`     | `{}`                        | Named roles the model selects via `agent_type`.                                                       |
-| `defaultPreset` | `string`                     | first preset                | Preset used when the model omits both `agent_type` and `instructions`.                                |
-| `instructions`  | `Open \| Choice \| Fixed`    | `new Open()`                | Policy for each node's system prompt.                                                                 |
-| `tools`         | `Choice \| Fixed \| Inherit` | `new Inherit()`             | Policy for each node's tools. A `Choice` must be `multiple`.                                          |
-| `model`         | `Inherit \| Choice \| Fixed` | `new Inherit()`             | Policy for each node's model.                                                                         |
-| `maxNodes`      | `number`                     | `20`                        | Upper bound on nodes per call. Must be an integer >= 2.                                               |
-| `maxEdges`      | `number`                     | `50`                        | Upper bound on edges per call. Must be a positive integer.                                            |
-| `maxSteps`      | `number`                     | `Infinity`                  | Max total node executions.                                                                            |
-| `timeout`       | `number`                     | `900_000`                   | Wall-clock ceiling for the whole graph, in milliseconds.                                              |
-| `nodeTimeout`   | `number`                     | `300_000`                   | Per-node wall-clock ceiling, in milliseconds.                                                         |
-| `name`          | `string`                     | `graph`                     | Tool name.                                                                                            |
-| `description`   | `string`                     | `DEFAULT_GRAPH_DESCRIPTION` | Tool description.                                                                                     |
+| Option          | Type                         | Default                     | Description                                                            |
+| --------------- | ---------------------------- | --------------------------- | ---------------------------------------------------------------------- |
+| `builder`       | `(spec: AgentSpec) => Agent` | (inherits from parent)      | Turns a resolved spec into an agent.                                   |
+| `presets`       | `Record<string, Preset>`     | `{}`                        | Named roles the model selects via `agent_type`.                        |
+| `defaultPreset` | `string`                     | first preset                | Preset used when the model omits both `agent_type` and `instructions`. |
+| `instructions`  | `Open \| Choice \| Fixed`    | `new Open()`                | Policy for each node's system prompt.                                  |
+| `tools`         | `Choice \| Fixed \| Inherit` | `new Inherit()`             | Policy for each node's tools. A `Choice` must be `multiple`.           |
+| `model`         | `Inherit \| Choice \| Fixed` | `new Inherit()`             | Policy for each node's model.                                          |
+| `maxNodes`      | `number`                     | `20`                        | Upper bound on nodes per call. Must be an integer >= 2.                |
+| `maxEdges`      | `number`                     | `50`                        | Upper bound on edges per call. Must be a positive integer.             |
+| `maxSteps`      | `number`                     | `Infinity`                  | Max total node executions.                                             |
+| `timeout`       | `number`                     | `900_000`                   | Wall-clock ceiling for the whole graph, in milliseconds.               |
+| `nodeTimeout`   | `number`                     | `300_000`                   | Per-node wall-clock ceiling, in milliseconds.                          |
+| `name`          | `string`                     | `graph`                     | Tool name.                                                             |
+| `description`   | `string`                     | `DEFAULT_GRAPH_DESCRIPTION` | Tool description.                                                      |
 
 Throws if `name` or `description` is empty, `maxNodes` is not an integer >= 2, `maxEdges` is not a positive integer, `maxSteps` is not a positive integer or `Infinity`, a timeout is not a positive number, `defaultPreset` is not one of `presets`, or a `Choice` axis has no options, or a `tools` `Choice` is not `multiple`.
 
@@ -79,6 +79,6 @@ The default builder gives each node the parent's model, tools (narrowed by the r
 
 ### Output
 
-Returns each completed node's output as `id: output` lines, keyed by node id (the agent id, which the default builder sets to the spec name; a custom `builder` should use `id: spec.name` so the model sees the names it chose). Returns an error result with the partial output when the graph does not complete (a node fails, or a step or time limit is hit), with each failed node rendered as `id: failed: error`, and an error result when the input is invalid.
+Returns each completed node's output as `name: output` lines, using the node names the model chose. Returns an error result with the partial output when the graph does not complete (a node fails, or a step or time limit is hit), with each failed node rendered as `name: failed: error`, and an error result when the input is invalid.
 
-If a node stops on interrupts, they are raised on the parent with the id `graph:<toolUseId>:<nodeInterruptId>` (`toolUseId` URI-encoded) and the node's original `name` and `reason`. The interrupted graph's state is stored in the parent's interrupt state, so resuming the parent resumes the graph, including after the parent is restored from a session. On resume the graph's agents are rebuilt from the same input, so a custom `builder` must give each spec the same agent id, such as `id: spec.name`. If the ids change, the rebuilt graph cannot load the stored turn and the interrupt is raised again.
+If a node stops on interrupts, they are raised on the parent with the id `graph:<toolUseId>:<nodeInterruptId>` (`toolUseId` URI-encoded) and the node's original `name` and `reason`. The interrupted graph's state is stored in the parent's interrupt state, so resuming the parent resumes the graph, including after the parent is restored from a session. On resume the graph's agents are rebuilt from the same input. Nodes are keyed by their names, so a custom `builder` can assign any agent ids.

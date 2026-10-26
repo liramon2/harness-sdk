@@ -11,9 +11,9 @@ import type { Agent } from '../../agent/agent.js'
 import type { InterruptState } from '../../interrupt.js'
 import { logger } from '../../logging/logger.js'
 import { AgentToolStreamer, ChildMultiAgentAdapter } from '../../multiagent/agent-tool-streamer.js'
-import type { EdgeDefinition } from '../../multiagent/edge.js'
 import { NodeResultEvent } from '../../multiagent/events.js'
 import { Graph } from '../../multiagent/graph.js'
+import { AgentNode } from '../../multiagent/nodes.js'
 import type { MultiAgentInput } from '../../multiagent/multiagent.js'
 import {
   _defaultBuilder,
@@ -56,9 +56,8 @@ const UNAVAILABLE_MESSAGE =
 /** Options for {@link makeGraph}. */
 export interface MakeGraphOptions {
   /**
-   * Turns a resolved spec into an agent whose id is its node id, so ids must be unique per call. Defaults to a
-   * builder that inherits from the parent. Called again with the same spec when an interrupted graph resumes, so
-   * it must give each spec the same agent id.
+   * Turns a resolved spec into an agent. Defaults to a builder that inherits from the parent. Called again with
+   * the same spec when an interrupted graph resumes.
    */
   builder?: AgentBuilder
   /** Named roles the model selects via `agent_type`. @defaultValue `{}` */
@@ -173,13 +172,12 @@ export function makeGraph({
         throw error
       }
 
-      // Edges reference spec names; the graph keys nodes by agent id.
-      const nodeIds = new Map(specs.map((spec, index) => [spec.name!, agents[index]!.id]))
-      // A stable id lets the stored turn be loaded into the graph rebuilt on resume.
+      // Stable ids let the stored turn be loaded into the graph rebuilt on resume.
       const graph = new Graph({
         id: `graph:${encodeURIComponent(toolUseId)}`,
-        nodes: agents,
-        edges: edges.map(([from, to]): EdgeDefinition => [nodeIds.get(from)!, nodeIds.get(to)!]),
+        // Keyed by the model's node name, since an AgentNode otherwise takes its agent's id.
+        nodes: agents.map((agent, index) => Object.assign(new AgentNode({ agent }), { id: specs[index]!.name! })),
+        edges,
         maxSteps,
         timeout,
         nodeTimeout,
@@ -419,10 +417,10 @@ function findCycle(nodeNames: string[], edges: [string, string][]): string[] | u
 }
 
 /**
- * Renders each completed node's output and each failed node's error, prefixed with its node id.
+ * Renders each completed node's output and each failed node's error, prefixed with its node name.
  *
  * @param results - The graph's node results, in execution order.
- * @returns One `id: output` or `id: failed: error` line per completed or failed node.
+ * @returns One `name: output` or `name: failed: error` line per completed or failed node.
  */
 function renderOutput(results: NodeResult[]): string {
   return results

@@ -45,12 +45,11 @@ function run(
   return collectGenerator(tool.stream(context))
 }
 
-/** Builds each node as an agent that answers `<name> done`, with `id` and `name` from the spec. */
+/** Builds each node as an agent that answers `<name> done`, leaving every agent the default id. */
 function textBuilder(spec: AgentSpec): Agent {
   return new Agent({
     model: new MockMessageModel().addTurn({ type: 'textBlock', text: `${spec.name} done` }),
     printer: false,
-    id: spec.name!,
   })
 }
 
@@ -258,7 +257,6 @@ describe('graph tool', () => {
           : new Agent({
               model: new MockMessageModel().addTurn(new Error(`${spec.name} exploded`)),
               printer: false,
-              id: spec.name!,
             })
 
       const { result } = await run(makeGraph({ builder }), {
@@ -393,7 +391,7 @@ describe('graph tool', () => {
         }),
       }
       const builder = (spec: AgentSpec): Agent =>
-        new Agent({ model: models[spec.name!]!, tools: [handoffToUser, slow], printer: false, id: spec.name! })
+        new Agent({ model: models[spec.name!]!, tools: [handoffToUser, slow], printer: false })
       const parentModel = toolUseTurn(new MockMessageModel(), 'graph', { task: 'go', nodes: NODES, edges: EDGES }, 'p1')
       const parent = new Agent({ model: parentModel, tools: [makeGraph({ builder, timeout: 50 })], printer: false })
 
@@ -419,8 +417,10 @@ describe('graph tool', () => {
           }),
         ])
       )
+      // Every build gets a new agent id, so resume must not depend on agent ids.
+      let builds = 0
       const builder = (spec: AgentSpec): Agent =>
-        new Agent({ model: models[spec.name!]!, tools: [handoffToUser], printer: false, id: spec.name! })
+        new Agent({ model: models[spec.name!]!, tools: [handoffToUser], printer: false, id: `agent-${(builds += 1)}` })
       const parentModel = toolUseTurn(
         new MockMessageModel(),
         'graph',
@@ -431,7 +431,8 @@ describe('graph tool', () => {
 
       let result = await parent.invoke('start')
       const reasons: string[] = []
-      while (result.stopReason === 'interrupt') {
+      // Bounded so a resume that keeps re-raising fails instead of hanging.
+      for (let turn = 0; result.stopReason === 'interrupt' && turn < 4; turn += 1) {
         const [interrupt] = result.interrupts!
         reasons.push(interrupt!.reason as string)
         result = await parent.invoke([new InterruptResponseContent({ interruptId: interrupt!.id, response: 'ok' })])
