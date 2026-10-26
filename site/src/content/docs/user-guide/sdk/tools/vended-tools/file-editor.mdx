@@ -1,0 +1,41 @@
+---
+title: File editor
+description: "Vended tool that lets an agent view, create, and edit files on disk."
+tags: [tool-authoring]
+sourceLinks:
+  - path: strands-ts/src/vended-tools/file-editor/file-editor.ts
+  - path: strands-py/src/strands/vended_tools/file_editor/file_editor.py
+---
+
+Lets your agent read and modify files on disk: useful for coding agents, config management, or any workflow where the agent inspects output and makes targeted edits.
+
+:::caution[Security Warning]
+This tool reads and writes files at arbitrary absolute paths with the full permissions of the process. Only use with trusted input and consider running in a [sandboxed environment](../../sandbox/index.mdx) for production.
+:::
+
+**Example:**
+
+<Tabs>
+<Tab label="TypeScript">
+
+```typescript
+--8<-- "user-guide/sdk/tools/vended-tools/file-editor_imports.ts:file_editor_import"
+
+--8<-- "user-guide/sdk/tools/vended-tools/file-editor.ts:file_editor_example"
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from strands import Agent
+from strands.vended_tools import file_editor
+
+agent = Agent(tools=[file_editor])
+agent("Create a file at /tmp/hello.txt with the contents 'Hello, world!'")
+```
+
+</Tab>
+</Tabs>
+
+[Full API reference](https://github.com/strands-agents/harness-sdk/blob/main/strands-ts/src/vended-tools/file-editor/README.md)

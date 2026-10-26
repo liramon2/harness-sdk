@@ -1,0 +1,51 @@
+---
+title: Stop
+description: "Vended tool that lets the model gracefully end the agent loop when the task is complete."
+tags: [tool-authoring]
+sourceLinks:
+  - path: strands-ts/src/experimental/vended-tools/stop/stop.ts
+  - path: strands-py/src/strands/vended_tools/stop/stop.py
+---
+
+Lets the model gracefully end the agent loop with an optional final message. The default loop already terminates when the model returns without any tool call; the stop tool is useful when you want an explicit "I am done" affordance, when a workflow enforces that termination is a deliberate model decision, or when a sub-agent needs to signal completion back to a coordinator via the loop's last assistant message.
+
+_Supported in: Node.js, modern browsers (TypeScript); all platforms (Python)._
+
+This is a cooperative stop, not an abort. Any other tools the model requested in the same turn still run to completion; the loop halts after that batch without calling the model again. The final message defaults to a 4096-character cap; pass `max_message_length` / `maxMessageLength` to `make_stop` / `makeStop` when a longer summary is legitimate.
+
+The two SDKs shim onto different loop-termination primitives, which produces a
+small difference in the final `AgentResult`'s stop reason. TypeScript halts via
+`AfterToolsEvent.endTurn` and returns `stopReason: "endTurn"`. Python halts via
+`agent.cancel(message=..., after_current_tools=True)` and returns
+`stop_reason: "cancelled"`. In both cases the stop text is appended as the last
+assistant message.
+
+**Example:**
+
+<Tabs>
+<Tab label="TypeScript">
+
+```typescript
+--8<-- "user-guide/sdk/tools/vended-tools/stop_imports.ts:stop_import"
+
+--8<-- "user-guide/sdk/tools/vended-tools/stop.ts:stop_example"
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from strands import Agent
+from strands.vended_tools import stop
+
+agent = Agent(
+    tools=[stop],
+    system_prompt="Complete the task. Call stop with a short summary when you are done.",
+)
+result = agent("Summarize the changes in ./CHANGELOG.md")
+```
+
+</Tab>
+</Tabs>
+
+[Full API reference](https://github.com/strands-agents/harness-sdk/blob/main/strands-ts/src/experimental/vended-tools/stop/README.md)
