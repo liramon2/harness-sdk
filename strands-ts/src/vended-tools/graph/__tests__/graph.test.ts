@@ -251,21 +251,25 @@ describe('graph tool', () => {
       )
     })
 
-    it('returns an error result with the partial output when a node fails', async () => {
+    it('returns an error result with the partial output and every failed node when nodes fail', async () => {
       const builder = (spec: AgentSpec): Agent =>
-        spec.name === 'a'
-          ? new Agent({ model: new MockMessageModel().addTurn(new Error('model exploded')), printer: false, id: 'a' })
-          : textBuilder(spec)
+        spec.name === 'ok'
+          ? textBuilder(spec)
+          : new Agent({
+              model: new MockMessageModel().addTurn(new Error(`${spec.name} exploded`)),
+              printer: false,
+              id: spec.name!,
+            })
 
       const { result } = await run(makeGraph({ builder }), {
         task: 't',
-        nodes: NODES,
-        edges: [{ from_node: 'b', to_node: 'a' }],
+        nodes: [{ name: 'ok' }, { name: 'x' }, { name: 'y' }].map((node) => ({ ...node, instructions: 'Do.' })),
+        edges: [],
       })
 
       expect(result).toEqual(
         errorResult(
-          /^Error: Graph stopped before completing \(status=FAILED: model exploded\)\. Partial output:\nb: b done$/
+          /^Error: Graph stopped before completing \(status=FAILED: x exploded\)\. Partial output:\nx: failed: x exploded\ny: failed: y exploded\nok: ok done$/
         )
       )
     })

@@ -79,6 +79,6 @@ The default builder gives each node the parent's model, tools (narrowed by the r
 
 ### Output
 
-Returns each completed node's output as `name: output` lines. Returns an error result with the partial output when the graph does not complete (a node fails, or a step or time limit is hit), and an error result when the input is invalid.
+Returns each completed node's output as `id: output` lines, keyed by node id (the agent id, which the default builder sets to the spec name; a custom `builder` should use `id: spec.name` so the model sees the names it chose). Returns an error result with the partial output when the graph does not complete (a node fails, or a step or time limit is hit), with each failed node rendered as `id: failed: error`, and an error result when the input is invalid.
 
 If a node stops on interrupts, they are raised on the parent with the id `graph:<toolUseId>:<nodeInterruptId>` (`toolUseId` URI-encoded) and the node's original `name` and `reason`. The interrupted graph's state is stored in the parent's interrupt state, so resuming the parent resumes the graph, including after the parent is restored from a session. On resume the graph's agents are rebuilt from the same input, so a custom `builder` must give each spec the same agent id, such as `id: spec.name`. If the ids change, the rebuilt graph cannot load the stored turn and the interrupt is raised again.

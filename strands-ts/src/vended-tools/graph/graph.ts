@@ -419,17 +419,20 @@ function findCycle(nodeNames: string[], edges: [string, string][]): string[] | u
 }
 
 /**
- * Renders each completed node's output, prefixed with its name.
+ * Renders each completed node's output and each failed node's error, prefixed with its node id.
  *
  * @param results - The graph's node results, in execution order.
- * @returns One `name: output` line per completed node.
+ * @returns One `id: output` or `id: failed: error` line per completed or failed node.
  */
 function renderOutput(results: NodeResult[]): string {
   return results
-    .filter((nodeResult) => nodeResult.status === Status.COMPLETED)
+    .filter((nodeResult) => nodeResult.status === Status.COMPLETED || nodeResult.status === Status.FAILED)
     .map((nodeResult) => ({
       nodeId: nodeResult.nodeId,
-      text: nodeResult.content.map((block) => (block.type === 'textBlock' ? block.text : '')).join(''),
+      text:
+        nodeResult.status === Status.FAILED
+          ? `failed: ${nodeResult.error?.message ?? 'unknown error'}`
+          : nodeResult.content.map((block) => (block.type === 'textBlock' ? block.text : '')).join(''),
     }))
     .filter(({ text }) => text)
     .map(({ nodeId, text }) => `${nodeId}: ${text}`)
