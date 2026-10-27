@@ -9,7 +9,7 @@ sourceLinks:
 
 Delegates a self-contained task to a child agent that runs in its own context and returns a final report. Use it when a subtask would otherwise flood the parent's context with intermediate work and you only need the conclusion. The model writes the task each time it calls the tool; the child cannot ask follow-up questions, so the task must include all the context it needs.
 
-The <Syntax py="make_subagent" ts="makeSubagent" /> factory uses [axis policies](index.mdx#axis-policies) to control what the model can configure on each child.
+The <Syntax py="make_subagent" ts="makeSubagent" /> factory uses [axis policies](index.mdx#multi-agent-tools) to control what the model can configure on each child.
 The configurable axes are `instructions`, `tools`, `model`, and `context`. The parent also passes a task to the child.
 
 By default, the child sees only the task (<Syntax py='context=Fixed("none")' ts="context: new Fixed('none')" />), but you can share the parent's conversation by setting `context` to a `Choice` over `"none"`, `"all"` (full history including tool calls), and `"no_tools"` (text turns only). When a non-`"none"` option is available, the model can also pass `last_messages` to limit how many parent messages to share.

@@ -3,6 +3,9 @@ import { bash } from '@strands-agents/sdk/vended-tools/bash'
 import { fileEditor } from '@strands-agents/sdk/vended-tools/file-editor'
 import { httpRequest } from '@strands-agents/sdk/vended-tools/http-request'
 import { notebook } from '@strands-agents/sdk/vended-tools/notebook'
+import { Choice, Fixed, Inherit, Open, Preset } from '@strands-agents/sdk/multiagent'
+import type { AgentSpec } from '@strands-agents/sdk/multiagent'
+import { makeSubagent } from '@strands-agents/sdk/vended-tools/subagent'
 
 // Agent with vended tools example
 async function agentWithVendedToolsExample() {
@@ -33,4 +36,47 @@ async function combinedToolsExample() {
       'It should reject empty names and invalid email formats.'
   )
   // --8<-- [end:combined_tools_example]
+}
+
+// Multi-agent tools example - one policy per axis
+async function multiAgentToolsExample() {
+  // --8<-- [start:multi_agent_tools_example]
+  const delegate = makeSubagent({
+    presets: {
+      researcher: new Preset({
+        instructions: 'You research topics on the web and cite your sources.',
+        description: 'web research',
+      }),
+      summarizer: new Preset({
+        instructions: 'You condense documents into short bullet summaries.',
+        description: 'summarize a document',
+      }),
+    },
+    defaultPreset: 'researcher',
+    instructions: new Open(), // model writes the child's system prompt
+    tools: new Fixed(['http_request']), // child can only make HTTP requests
+    model: new Inherit(), // child runs on the parent's model
+    context: new Choice(['none', 'no_tools']), // model picks how much history to share
+  })
+  const agent = new Agent({ tools: [bash, httpRequest, delegate] })
+  await agent.invoke(
+    'Have a subagent summarize the latest Node.js release notes, then run the tests.'
+  )
+  // --8<-- [end:multi_agent_tools_example]
+}
+
+// Custom builder example
+async function customBuilderExample() {
+  // --8<-- [start:custom_builder_example]
+  // Each child gets the resolved instructions and only the HTTP request tool
+  const delegate = makeSubagent({
+    builder: (spec: AgentSpec) =>
+      new Agent({
+        name: spec.name,
+        systemPrompt: spec.instructions,
+        tools: [httpRequest],
+      }),
+  })
+  const agent = new Agent({ tools: [delegate] })
+  // --8<-- [end:custom_builder_example]
 }

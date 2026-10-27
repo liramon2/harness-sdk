@@ -37,22 +37,91 @@ Each tool is imported from its own subpath under `@strands-agents/sdk/vended-too
 | [Swarm](swarm.mdx) | Spin up a team of agents that collaborate via the swarm pattern | Python, TypeScript (Node.js, browsers) |
 | [Graph](graph.mdx) | Run a team of sub-agents as a directed acyclic graph designed by the model | Python |
 
-## Axis policies
+## Multi-agent tools
 
-Some vended tools let the model configure child agents at runtime. Axis policies control how much freedom the model has over each parameter. Import them from <Syntax py="strands.multiagent" ts="@strands-agents/sdk/multiagent" />.
+The [subagent](subagent.mdx), [swarm](swarm.mdx), and [graph](graph.mdx) tools let the model configure child agents at runtime. They use axis policies to control how much freedom the model has over each parameter. Import them from <Syntax py="strands.multiagent" ts="@strands-agents/sdk/multiagent" />.
 
-| Policy | Effect | Model sees a parameter? |
-|--------|--------|------------------------|
-| <Syntax py="Inherit()" ts="new Inherit()" /> | Child inherits the parent's value | No |
-| <Syntax py="Fixed(value)" ts="new Fixed(value)" /> | Developer pins the value | No |
-| <Syntax py="Open()" ts="new Open()" /> | Model writes a free-form value | Yes (string) |
-| <Syntax py="Choice([...], multiple=True)" ts="new Choice([...], true)" /> | Model picks from a set | Yes (enum) |
+- <Syntax py="Inherit()" ts="new Inherit()" />: the child inherits the parent's value. Hidden from the model.
+- <Syntax py="Fixed(value)" ts="new Fixed(value)" />: you pin the value. Hidden from the model.
+- <Syntax py="Open()" ts="new Open()" />: the model writes a free-form string value.
+- <Syntax py="Choice([...], multiple=True)" ts="new Choice([...], true)" />: the model picks from a set you define (one value, or several when `multiple` is set).
 
 Use `Option` inside a `Choice` to map model-facing names to runtime values. Bundle axis defaults into a `Preset` that the model selects via `agent_type`. When the model omits both `agent_type` and `instructions`, the child uses <Syntax py="default_preset" ts="defaultPreset" />, or the first preset if none is set.
+
+<Tabs>
+<Tab label="TypeScript">
+
+```typescript
+--8<-- "user-guide/sdk/tools/vended-tools/index_imports.ts:multi_agent_tools_import"
+
+--8<-- "user-guide/sdk/tools/vended-tools/index.ts:multi_agent_tools_example"
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from strands import Agent
+from strands.multiagent import Choice, Fixed, Inherit, Open, Preset
+from strands.vended_tools.http_request import http_request
+from strands.vended_tools.shell import shell
+from strands.vended_tools.subagent import make_subagent
+
+delegate = make_subagent(
+    presets={
+        "researcher": Preset(
+            instructions="You research topics on the web and cite your sources.",
+            description="web research",
+        ),
+        "summarizer": Preset(
+            instructions="You condense documents into short bullet summaries.",
+            description="summarize a document",
+        ),
+    },
+    default_preset="researcher",
+    instructions=Open(),  # model writes the child's system prompt
+    tools=Fixed(["http_request"]),  # child can only make HTTP requests
+    model=Inherit(),  # child runs on the parent's model
+    context=Choice(["none", "no_tools"]),  # model picks how much history to share
+)
+agent = Agent(tools=[shell, http_request, delegate])
+agent("Have a subagent summarize the latest Python release notes, then run the tests.")
+```
+
+</Tab>
+</Tabs>
 
 Tools that accept axis policies use a default builder to turn resolved specs into child agents. By default, it produces child agents that inherit the parent's tools, model, and interventions, so a child's tool calls go through the same approval and authorization checks as the parent's. Each child gets <Syntax py='context_manager="auto"' ts="contextManager: 'auto'" /> (unless its model is stateful) in place of the parent's context-management tools, and accesses the parent's long-term memory through inherited memory tools.
 
 To replace the default builder, pass any callable that takes an `AgentSpec` and returns an `Agent`. A custom builder decides everything the child inherits, including interventions.
+
+<Tabs>
+<Tab label="TypeScript">
+
+```typescript
+--8<-- "user-guide/sdk/tools/vended-tools/index_imports.ts:custom_builder_import"
+
+--8<-- "user-guide/sdk/tools/vended-tools/index.ts:custom_builder_example"
+```
+
+</Tab>
+<Tab label="Python">
+
+```python
+from strands import Agent
+from strands.multiagent import AgentSpec
+from strands.vended_tools.http_request import http_request
+from strands.vended_tools.subagent import make_subagent
+
+def build_child(spec: AgentSpec) -> Agent:
+    return Agent(name=spec.name, system_prompt=spec.instructions, tools=[http_request])
+
+delegate = make_subagent(builder=build_child)
+agent = Agent(tools=[delegate])
+```
+
+</Tab>
+</Tabs>
 
 ---
 
