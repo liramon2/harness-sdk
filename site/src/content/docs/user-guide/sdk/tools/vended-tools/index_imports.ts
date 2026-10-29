@@ -5,7 +5,7 @@
 // --8<-- [start:basic_import]
 import { Agent } from '@strands-agents/sdk'
 import { bash } from '@strands-agents/sdk/vended-tools/bash'
-import { fileEditor } from '@strands-agents/sdk/vended-tools/file-editor'
+import { edit } from '@strands-agents/sdk/vended-tools/edit'
 import { httpRequest } from '@strands-agents/sdk/vended-tools/http-request'
 import { notebook, makeNotebook } from '@strands-agents/sdk/vended-tools/notebook'
 // --8<-- [end:basic_import]

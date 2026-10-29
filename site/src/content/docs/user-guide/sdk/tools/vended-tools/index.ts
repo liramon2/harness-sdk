@@ -1,5 +1,6 @@
 import { Agent } from '@strands-agents/sdk'
 import { bash } from '@strands-agents/sdk/vended-tools/bash'
+import { edit } from '@strands-agents/sdk/vended-tools/edit'
 import { fileEditor } from '@strands-agents/sdk/vended-tools/file-editor'
 import { httpRequest } from '@strands-agents/sdk/vended-tools/http-request'
 import { notebook } from '@strands-agents/sdk/vended-tools/notebook'
@@ -11,7 +12,7 @@ import { makeSubagent } from '@strands-agents/sdk/vended-tools/subagent'
 async function agentWithVendedToolsExample() {
   // --8<-- [start:agent_with_vended_tools]
   const agent = new Agent({
-    tools: [bash, fileEditor, httpRequest, notebook],
+    tools: [bash, edit, httpRequest, notebook],
   })
   // --8<-- [end:agent_with_vended_tools]
 }

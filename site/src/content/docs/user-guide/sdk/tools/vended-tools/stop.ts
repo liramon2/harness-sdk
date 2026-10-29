@@ -1,5 +1,5 @@
 import { Agent } from '@strands-agents/sdk'
-import { stop } from '@strands-agents/sdk/experimental/vended-tools/stop'
+import { stop } from '@strands-agents/sdk/vended-tools/stop'
 
 // Stop tool example
 async function stopExample() {

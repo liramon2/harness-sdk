@@ -22,7 +22,10 @@ Each tool is imported from its own subpath under `@strands-agents/sdk/vended-too
 
 | Tool | Description | Supported in |
 |------|-------------|--------------|
-| [File Editor](file-editor.mdx) | View, create, and edit files | Python, TypeScript (Node.js) |
+| [Edit](edit.mdx) | Make in-place changes to a text file | Python, TypeScript (Node.js) |
+| [File Editor](file-editor.mdx) *(deprecated)* | View, create, and edit files | Python, TypeScript (Node.js) |
+| [Read](read.mdx) | Read a file as numbered text or a media block | Python, TypeScript (Node.js) |
+| [Write](write.mdx) | Create or overwrite a text file with the full provided content | Python, TypeScript (Node.js) |
 | [HTTP Request](http-request.mdx) | Make HTTP requests to external APIs | Python, TypeScript (Node.js 22+, browsers) |
 | [Notebook](notebook.mdx) | Manage persistent text notebooks | Python, TypeScript (Node.js, browsers) |
 | [Bash](shell.mdx) | Execute shell commands with persistent sessions | Python, TypeScript (Node.js, Unix/Linux/macOS) |
@@ -35,7 +38,7 @@ Each tool is imported from its own subpath under `@strands-agents/sdk/vended-too
 | [Python REPL](python-repl.mdx) | Execute Python code through the agent's sandbox | Python, TypeScript (Node.js, Unix/Linux/macOS) |
 | [Subagent](subagent.mdx) | Delegate a self-contained task to a child agent | Python, TypeScript (Node.js, browsers) |
 | [Swarm](swarm.mdx) | Spin up a team of agents that collaborate via the swarm pattern | Python, TypeScript (Node.js, browsers) |
-| [Graph](graph.mdx) | Run a team of sub-agents as a directed acyclic graph designed by the model | Python |
+| [Graph](graph.mdx) | Run a team of sub-agents as a directed acyclic graph designed by the model | Python, TypeScript (Node.js, browsers) |
 
 ## Multi-agent tools
 

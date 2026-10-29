@@ -7,6 +7,10 @@ sourceLinks:
   - path: strands-py/src/strands/vended_tools/file_editor/file_editor.py
 ---
 
+:::caution[Deprecated]
+`file_editor` / `fileEditor` is deprecated in favor of the focused `edit`, `read`, and `write` tools. It will be removed in a future release. Calling `make_file_editor` emits a `DeprecationWarning` in Python; `makeFileEditor` and `fileEditor` are marked `@deprecated` in TypeScript. Docker and SSH sandboxes still vend `file_editor` as `sandbox_file_editor` for continuity.
+:::
+
 Lets your agent read and modify files on disk: useful for coding agents, config management, or any workflow where the agent inspects output and makes targeted edits.
 
 :::caution[Security Warning]
